@@ -1,0 +1,100 @@
+@import url("https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap");
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background:
+    radial-gradient(1200px 800px at 50% -10%, #1b2440 0%, transparent 60%),
+    linear-gradient(180deg, #0a0e1a 0%, #05060a 100%);
+  color: #e5e7eb;
+  font-family: "VT323", ui-monospace, monospace;
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-pixel {
+  font-family: "Press Start 2P", monospace;
+  letter-spacing: 0.02em;
+}
+
+.font-retro {
+  font-family: "VT323", ui-monospace, monospace;
+}
+
+/* crisp pixel scaling for canvases */
+canvas {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
+.pixel-panel {
+  background: linear-gradient(180deg, rgba(31, 41, 59, 0.9), rgba(15, 23, 42, 0.92));
+  border: 2px solid rgba(148, 163, 184, 0.25);
+  box-shadow:
+    0 0 0 2px rgba(0, 0, 0, 0.5),
+    0 18px 40px rgba(0, 0, 0, 0.45);
+}
+
+.pixel-btn {
+  font-family: "Press Start 2P", monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.02em;
+  border: 2px solid rgba(0, 0, 0, 0.6);
+  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.55);
+  transition: transform 0.05s ease, filter 0.1s ease;
+}
+.pixel-btn:active {
+  transform: translateY(3px);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.55);
+}
+.pixel-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.3);
+}
+
+/* scrollbars */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.3);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.4);
+  border-radius: 6px;
+}
+
+@keyframes floaty {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+.animate-floaty {
+  animation: floaty 3s ease-in-out infinite;
+}
+
+@keyframes pulse-glow {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 4px currentColor);
+  }
+  50% {
+    filter: drop-shadow(0 0 14px currentColor);
+  }
+}
+.animate-glow {
+  animation: pulse-glow 2.4s ease-in-out infinite;
+}
