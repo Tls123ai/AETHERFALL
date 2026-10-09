@@ -8,13 +8,16 @@ import {
   WEAPONS,
   SKILLS,
   MAPS,
+  PERM_UPGRADES,
+  permCost,
   computeStats,
   type PlayerStats,
+  type PermUpgradeDef,
 } from "@/lib/game-data";
 import { RARITY_COLORS } from "@/lib/types";
 import { WeaponCard, SkillCard, PASSIVE_LABEL } from "../cards";
 
-type Tab = "character" | "weapons" | "skills" | "maps";
+type Tab = "character" | "weapons" | "skills" | "maps" | "forge";
 
 /** NPC who runs each hub service. */
 const TAB_META: Record<Tab, { icon: string; npc: string; title: string }> = {
@@ -22,6 +25,7 @@ const TAB_META: Record<Tab, { icon: string; npc: string; title: string }> = {
   weapons: { icon: "⚒", npc: "Branda, Bladesmith", title: "WEAPON SHOP" },
   skills: { icon: "✦", npc: "Master Oryn", title: "SKILL STATION" },
   maps: { icon: "🗺", npc: "Warden Pell", title: "DUNGEON GATE" },
+  forge: { icon: "🔥", npc: "Forgemaster Koda", title: "THE FORGE" },
 };
 
 function StatBar({ label, value }: { label: string; value: string }) {
@@ -34,12 +38,23 @@ function StatBar({ label, value }: { label: string; value: string }) {
 }
 
 export default function HubScreen() {
-  const { save, user, buyWeapon, upgradeSkill, equipWeapon, enterMap, chooseClass, logout, notice } =
-    useGame();
+  const {
+    save,
+    user,
+    progress,
+    buyWeapon,
+    upgradeSkill,
+    upgradePerm,
+    equipWeapon,
+    enterMap,
+    chooseClass,
+    logout,
+    notice,
+  } = useGame();
   const [tab, setTab] = useState<Tab>("character");
   if (!save) return null;
   const cls = CLASSES[save.classId];
-  const stats: PlayerStats = computeStats(save);
+  const stats: PlayerStats = computeStats(save, progress.permLevels);
   const weapons = Object.values(WEAPONS).filter(
     (w) => w.classId === save.classId && !w.bossOnly
   );
@@ -107,8 +122,8 @@ export default function HubScreen() {
       </header>
 
       {/* Tabs */}
-      <nav className="mb-5 grid grid-cols-2 gap-2 sm:grid-cols-4">
-        {(["character", "weapons", "skills", "maps"] as Tab[]).map((t) => {
+      <nav className="mb-5 grid grid-cols-2 gap-2 sm:grid-cols-5">
+        {(["character", "weapons", "skills", "maps", "forge"] as Tab[]).map((t) => {
           const meta = TAB_META[t];
           return (
             <button
@@ -266,7 +281,84 @@ export default function HubScreen() {
             </div>
           </div>
         )}
+
+        {tab === "forge" && (
+          <div>
+            <h3 className="font-pixel mb-1 text-xs text-orange-300">
+              THE FORGE — PERMANENT UPGRADES
+            </h3>
+            <p className="font-retro mb-4 text-base text-slate-400">
+              Forgemaster Koda shapes your <span className="text-orange-200">account</span>:
+              these upgrades are shared by every hero of yours and never reset.
+              Costs are paid from <span className="text-amber-200">{cls.name}&apos;s</span> purse.
+            </p>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {PERM_UPGRADES.map((p) => (
+                <PermCard
+                  key={p.id}
+                  def={p}
+                  level={progress.permLevels[p.id] ?? 0}
+                  gold={save.gold}
+                  resources={save.resources}
+                  onUpgrade={() => upgradePerm(p.id)}
+                />
+              ))}
+            </div>
+          </div>
+        )}
       </div>
+    </div>
+  );
+}
+
+function PermCard({
+  def,
+  level,
+  gold,
+  resources,
+  onUpgrade,
+}: {
+  def: PermUpgradeDef;
+  level: number;
+  gold: number;
+  resources: number;
+  onUpgrade: () => void;
+}) {
+  const maxed = level >= def.maxLevel;
+  const cost = permCost(def, level);
+  const afford = gold >= cost.gold && resources >= cost.resources;
+  return (
+    <div className="flex flex-col rounded-xl border-2 border-orange-500/40 bg-orange-500/5 p-4">
+      <div className="flex items-center justify-between">
+        <span className="font-pixel text-[0.62rem] text-orange-200">
+          {def.icon} {def.name}
+        </span>
+        <span className="font-retro text-base text-amber-300">
+          {level} / {def.maxLevel}
+        </span>
+      </div>
+      <p className="font-retro mt-1 text-base text-slate-300">{def.description}</p>
+      <p className="font-retro text-base text-emerald-300">{def.perLevel}</p>
+      {/* level pips */}
+      <div className="mt-2 flex gap-1">
+        {Array.from({ length: def.maxLevel }).map((_, i) => (
+          <span
+            key={i}
+            className={`h-2.5 w-5 rounded-sm ${
+              i < level ? "bg-orange-400" : "bg-slate-700"
+            }`}
+          />
+        ))}
+      </div>
+      <button
+        onClick={onUpgrade}
+        disabled={maxed || !afford}
+        className="pixel-btn mt-3 rounded-md bg-orange-600 py-2 text-white"
+      >
+        {maxed
+          ? "MAXED"
+          : `FORGE  ⛀${cost.gold} + ⚡${cost.resources}`}
+      </button>
     </div>
   );
 }

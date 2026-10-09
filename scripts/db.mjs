@@ -98,6 +98,13 @@ try {
       updated_at timestamp not null default now(),
       primary key (user_id, class_id)
     );
+
+    create table if not exists user_progress (
+      user_id integer primary key references users(id) on delete cascade,
+      unlocked_classes jsonb not null default '["swordsman"]',
+      perm_levels jsonb not null default '{}',
+      updated_at timestamp not null default now()
+    );
   `);
   await client.query("select 1");
   await client.end();

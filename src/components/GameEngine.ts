@@ -285,6 +285,8 @@ export interface EngineOpts {
   mapIndex: number;
   onComplete: (r: RunResult) => void;
   onInteract?: (kind: "merchant" | "skill") => void;
+  /** account-level permanent upgrade levels */
+  perms?: Record<string, number>;
 }
 
 export class GameEngine {
@@ -331,6 +333,7 @@ export class GameEngine {
   kills = 0;
   shake = 0;
   paused = false;
+  perms: Record<string, number> = {};
 
   keys = new Set<string>();
   mx = 0;
@@ -374,7 +377,8 @@ export class GameEngine {
     this.onComplete = opts.onComplete;
     this.onInteract = opts.onInteract;
     this.cls = CLASSES[opts.save.classId];
-    this.stats = computeStats(opts.save);
+    this.stats = computeStats(opts.save, opts.perms ?? {});
+    this.perms = { ...(opts.perms ?? {}) };
     this.ctx = this.canvas.getContext("2d")!;
     this.run.level = opts.save.level;
     this.run.xp = opts.save.xp;
@@ -385,7 +389,9 @@ export class GameEngine {
     return this.stats.weapon.damage + (this.run.level - 1) * 4;
   }
   maxHp() {
-    return this.cls.maxHp + (this.run.level - 1) * 18;
+    // stats.maxHp includes class base + save-level + Vitality;
+    // add in-run level-ups earned since the run started
+    return this.stats.maxHp + (this.run.level - this.save.level) * 18;
   }
 
   start() {
@@ -422,7 +428,15 @@ export class GameEngine {
   /** Live-update save after in-map purchases/upgrades. */
   setSave(next: SaveData) {
     this.save = next;
-    this.stats = computeStats(next);
+    this.stats = computeStats(next, this.perms);
+    if (this.player)
+      this.player.hp = Math.min(this.player.hp, this.maxHp());
+  }
+
+  /** Live-update permanent upgrade levels (account level). */
+  setPerms(perms: Record<string, number>) {
+    this.perms = { ...perms };
+    this.stats = computeStats(this.save, this.perms);
     if (this.player)
       this.player.hp = Math.min(this.player.hp, this.maxHp());
   }
@@ -627,7 +641,18 @@ export class GameEngine {
     else if (k === "r") this.useSkill(2);
     else if (k === " ") this.mdown = true;
     else if (k === "f") this.tryInteract();
-    else if (k === "escape") this.requestAbandon();
+    else if (k === "m") {
+      sfx.setMuted(!sfx.muted);
+      this.dmgnums.push({
+        x: this.player.x,
+        y: this.player.y - 20,
+        vy: -20,
+        life: 1,
+        text: sfx.muted ? "SOUND OFF" : "SOUND ON",
+        color: "#94a3b8",
+        size: 7,
+      });
+    } else if (k === "escape") this.requestAbandon();
     if ([" ", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k))
       e.preventDefault();
   }
@@ -946,7 +971,7 @@ export class GameEngine {
     const skill = SKILLS[skillId];
     const lvl = this.save.skillLevels[skillId] ?? 1;
     const base = this.attackDamage();
-    p.skillCd[slot] = skill.baseCooldown;
+    p.skillCd[slot] = skill.baseCooldown * this.stats.cdMult;
     sfx.play("skill");
 
     if (this.cls.id === "swordsman") {
@@ -1274,7 +1299,7 @@ export class GameEngine {
   killEnemy(e: Enemy) {
     this.enemies = this.enemies.filter((x) => x.id !== e.id);
     this.kills += 1;
-    this.run.gold += e.gold;
+    this.run.gold += Math.round(e.gold * this.stats.goldMult);
     this.run.res += e.res;
     this.addXp(e.xp);
     this.dmgnums.push({
@@ -1303,7 +1328,7 @@ export class GameEngine {
   killBoss() {
     this.run.bossDefeated = true;
     const map = getMap(this.mapIndex);
-    this.run.gold += map.rewardGold;
+    this.run.gold += Math.round(map.rewardGold * this.stats.goldMult);
     this.run.res += map.rewardResources;
     const reward = map.rewardWeapons[this.cls.id];
     if (reward && !this.run.weaponRewards.includes(reward))
@@ -1975,7 +2000,9 @@ export class GameEngine {
         c.opened = true;
         c.t = 0;
         const mult = c.rich ? 1.8 : 1;
-        const gold = Math.round((randInt(30, 70) + this.mapIndex * 10) * mult);
+        const gold = Math.round(
+          (randInt(30, 70) + this.mapIndex * 10) * mult * this.stats.goldMult
+        );
         const res = randInt(1, 3) + (c.rich ? 2 : 0);
         this.run.gold += gold;
         this.run.res += res;

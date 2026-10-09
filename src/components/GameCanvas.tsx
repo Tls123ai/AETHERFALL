@@ -11,12 +11,14 @@ export default function GameCanvas({
   onComplete,
   onInteract,
   paused,
+  perms,
 }: {
   save: SaveData;
   mapIndex: number;
   onComplete: (r: RunResult) => void;
   onInteract?: (kind: "merchant" | "skill") => void;
   paused?: boolean;
+  perms?: Record<string, number>;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -35,6 +37,7 @@ export default function GameCanvas({
       mapIndex,
       onComplete,
       onInteract: (k) => interactRef.current?.(k),
+      perms,
     });
     engineRef.current = engine;
     engine.start();
@@ -54,6 +57,12 @@ export default function GameCanvas({
   useEffect(() => {
     engineRef.current?.setSave(save);
   }, [save]);
+
+  // live permanent-upgrade updates
+  useEffect(() => {
+    engineRef.current?.setPerms(perms ?? {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [perms?.vitality, perms?.keen, perms?.fortune, perms?.resilience, perms?.swift, perms?.focus]);
 
   const cls = CLASSES[save.classId];
 
@@ -148,7 +157,7 @@ export default function GameCanvas({
 
         {/* Controls hint */}
         <div className="absolute bottom-3 left-1/2 -translate-x-1/2 text-center text-[10px] text-white/50">
-          WASD move · Mouse aim · Click/Space attack · Q/E/R skills · Shift dodge · F interact · Esc abandon
+          WASD move · Mouse aim · Click/Space attack · Q/E/R skills · Shift dodge · F interact · M sound · Esc abandon
         </div>
       </div>
 

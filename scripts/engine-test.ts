@@ -286,6 +286,28 @@ console.log("death returns to hub:");
   engine.stop();
 }
 
+console.log("permanent upgrades (engine):");
+{
+  const perms = { vitality: 5, fortune: 5, focus: 5 };
+  const { engine } = makeEngine(createDefaultSave("swordsman"), 1, undefined);
+  // apply perms live, as PlayScreen would
+  (engine as any).setPerms(perms);
+  const noPerm = makeEngine(createDefaultSave("swordsman"), 1);
+  assert.ok(engine.maxHp() > noPerm.engine.maxHp(), "vitality raises max HP");
+  assert.ok(engine.stats.goldMult > 1, "fortune multiplier active");
+  assert.ok(engine.stats.cdMult < 1, "focus shortens cooldowns");
+  // fortune multiplies kill gold
+  const e = engine.enemies[0];
+  const goldBefore = engine.run.gold;
+  const eMax = e.maxHp;
+  e.hp = 1;
+  engine.dealToEnemy(e, eMax, 0);
+  assert.ok(engine.run.gold - goldBefore > 0, "gold earned on kill");
+  ok("forge upgrades apply in-engine (max HP, gold find, cooldowns)");
+  engine.stop();
+  noPerm.engine.stop();
+}
+
 console.log("setSave live update:");
 {
   const save = createDefaultSave("swordsman");

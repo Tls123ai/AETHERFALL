@@ -9,6 +9,11 @@ import {
   WEAPONS,
   SKILLS,
   MAPS,
+  PERM_UPGRADES,
+  permCost,
+  getPermDef,
+  computeStats,
+  createDefaultSave,
 } from "../src/lib/game-data.ts";
 
 const CLASS_IDS = Object.keys(CLASSES);
@@ -75,5 +80,48 @@ for (let i = 1; i < MAPS.length; i++) {
   assert.ok(MAPS[i].boss.maxHp > MAPS[i - 1].boss.maxHp, "boss hp must increase");
 }
 ok("difficulty curve increases across maps");
+
+console.log("permanent upgrades:");
+const permIds = new Set();
+for (const p of PERM_UPGRADES) {
+  assert.ok(!permIds.has(p.id), `dup perm ${p.id}`);
+  permIds.add(p.id);
+  assert.ok(p.maxLevel >= 3 && p.baseGold > 0 && p.baseRes >= 1);
+  const c0 = permCost(p, 0);
+  const c1 = permCost(p, 1);
+  assert.ok(c1.gold > c0.gold && c1.resources > c0.resources, "costs must scale");
+}
+assert.equal(getPermDef("vitality")?.id, "vitality");
+ok(`${PERM_UPGRADES.length} permanent upgrades (scaling costs, maxed caps)`);
+
+console.log("class unlocks:");
+const unlockBosses = CLASS_LIST.map((c) => c.unlockBoss).filter(
+  (b) => b !== null
+);
+assert.equal(CLASSES.swordsman.unlockBoss, null, "swordsman always unlocked");
+assert.ok(unlockBosses.length === 2, "two gated heroes");
+for (const b of unlockBosses) assert.ok(MAPS[b - 1], `map ${b} exists`);
+const gated = CLASS_LIST.filter((c) => c.unlockBoss !== null);
+assert.equal(
+  new Set(gated.map((c) => c.unlockBoss)).size,
+  2,
+  "each boss gates a distinct hero"
+);
+ok("class unlock gates: mage ← Map 1 boss, archer ← Map 2 boss");
+
+console.log("perm stat math:");
+const base = computeStats(createDefaultSave("swordsman"));
+const boosted = computeStats(
+  { ...createDefaultSave("swordsman"), level: 1 },
+  { vitality: 5, keen: 5, fortune: 5, resilience: 5, swift: 5, focus: 5 }
+);
+assert.equal(boosted.maxHp - base.maxHp, 50, "vitality +10 x5");
+assert.ok(boosted.critChance > base.critChance, "keen");
+assert.ok(boosted.goldMult > 1, "fortune");
+assert.ok(boosted.defense > base.defense, "resilience");
+assert.ok(boosted.defense <= 0.75, "defense capped");
+assert.ok(boosted.moveSpeed > base.moveSpeed, "swift");
+assert.ok(boosted.cdMult < 1, "focus");
+ok("forge upgrades apply to computed stats (with caps)");
 
 console.log(`\n${checks} checks passed`);

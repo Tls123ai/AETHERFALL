@@ -11,6 +11,7 @@ export default function PlayScreen() {
   const {
     save,
     playMap,
+    progress,
     applyRunResult,
     goHub,
     buyWeapon,
@@ -56,6 +57,7 @@ export default function PlayScreen() {
         onComplete={handleComplete}
         onInteract={(k) => setCamp(k)}
         paused={camp !== null && !result}
+        perms={progress.permLevels}
       />
 
       {camp && !result && (

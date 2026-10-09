@@ -22,6 +22,8 @@ export interface ClassDef {
   defense: number; // 0..1 damage reduction
   starterWeapon: string;
   skillIds: string[];
+  /** map index whose boss must be defeated (by any class) to unlock */
+  unlockBoss: number | null;
 }
 
 export const CLASSES: Record<ClassId, ClassDef> = {
@@ -41,6 +43,7 @@ export const CLASSES: Record<ClassId, ClassDef> = {
     defense: 0.18,
     starterWeapon: "iron_sword",
     skillIds: ["sword_slash", "dash_strike", "whirlwind"],
+    unlockBoss: null,
   },
   mage: {
     id: "mage",
@@ -58,6 +61,7 @@ export const CLASSES: Record<ClassId, ClassDef> = {
     defense: 0.06,
     starterWeapon: "fire_staff",
     skillIds: ["fireball", "ice_nova", "lightning_bolt"],
+    unlockBoss: 1,
   },
   archer: {
     id: "archer",
@@ -75,6 +79,7 @@ export const CLASSES: Record<ClassId, ClassDef> = {
     defense: 0.08,
     starterWeapon: "longbow",
     skillIds: ["multi_shot", "piercing_arrow", "rain_of_arrows"],
+    unlockBoss: 2,
   },
 };
 
@@ -539,6 +544,97 @@ export function getMap(index: number): MapDef {
   return m;
 }
 
+export interface PermUpgradeDef {
+  id: string;
+  name: string;
+  icon: string;
+  description: string;
+  perLevel: string;
+  maxLevel: number;
+  /** gold cost for level n+1 = baseGold * (n+1) */
+  baseGold: number;
+  /** resource cost for level n+1 = baseRes * (n+1) */
+  baseRes: number;
+}
+
+/**
+ * Account-level permanent upgrades (The Forge). Shared across all
+ * classes of an account; paid from the active hero's purse.
+ */
+export const PERM_UPGRADES: PermUpgradeDef[] = [
+  {
+    id: "vitality",
+    name: "Vitality",
+    icon: "❤",
+    description: "Reinforced flesh and spirit.",
+    perLevel: "+10 Max HP",
+    maxLevel: 5,
+    baseGold: 150,
+    baseRes: 1,
+  },
+  {
+    id: "keen",
+    name: "Keen Eye",
+    icon: "👁",
+    description: "You see the gaps in their armor.",
+    perLevel: "+1% Crit chance",
+    maxLevel: 5,
+    baseGold: 200,
+    baseRes: 2,
+  },
+  {
+    id: "fortune",
+    name: "Fortune",
+    icon: "⛀",
+    description: "Coin and fate favour you.",
+    perLevel: "+5% Gold find",
+    maxLevel: 5,
+    baseGold: 250,
+    baseRes: 2,
+  },
+  {
+    id: "resilience",
+    name: "Resilience",
+    icon: "🛡",
+    description: "Blisters become battle scars.",
+    perLevel: "+4% Damage reduction",
+    maxLevel: 5,
+    baseGold: 200,
+    baseRes: 2,
+  },
+  {
+    id: "swift",
+    name: "Swift",
+    icon: "👟",
+    description: "Feathers on your feet.",
+    perLevel: "+3% Move speed",
+    maxLevel: 5,
+    baseGold: 180,
+    baseRes: 1,
+  },
+  {
+    id: "focus",
+    name: "Focus",
+    icon: "⏳",
+    description: "Meditation between strikes.",
+    perLevel: "-6% Skill cooldowns",
+    maxLevel: 5,
+    baseGold: 220,
+    baseRes: 2,
+  },
+];
+
+export function permCost(def: PermUpgradeDef, currentLevel: number) {
+  return {
+    gold: def.baseGold * (currentLevel + 1),
+    resources: def.baseRes * (currentLevel + 1),
+  };
+}
+
+export function getPermDef(id: string): PermUpgradeDef | undefined {
+  return PERM_UPGRADES.find((p) => p.id === id);
+}
+
 export interface PlayerStats {
   maxHp: number;
   damage: number;
@@ -549,22 +645,37 @@ export interface PlayerStats {
   weapon: WeaponDef;
   lifesteal: number;
   pierce: number;
+  /** multiplier applied to gold earned (Fortune) */
+  goldMult: number;
+  /** multiplier applied to skill cooldowns (Focus) */
+  cdMult: number;
 }
 
-export function computeStats(save: SaveData): PlayerStats {
+/**
+ * Compute combat stats for a class save, optionally with
+ * account-level permanent forge upgrades applied.
+ */
+export function computeStats(
+  save: SaveData,
+  permLevels: Record<string, number> = {}
+): PlayerStats {
   const cls = CLASSES[save.classId];
   const weapon = WEAPONS[save.equippedWeapon] ?? WEAPONS[cls.starterWeapon];
   const level = Math.max(1, save.level);
-  const maxHp = cls.maxHp + (level - 1) * 18;
+  const p = (id: string) => Math.max(0, Math.min(5, Math.floor(permLevels[id] || 0)));
+
+  const maxHp = cls.maxHp + (level - 1) * 18 + p("vitality") * 10;
   const damage = weapon.damage + (level - 1) * 4;
   const attackSpeed = weapon.attackSpeed;
-  const moveSpeed = cls.moveSpeed;
-  const critChance = cls.critChance + weapon.critChance;
-  const defense = cls.defense;
+  const moveSpeed = cls.moveSpeed * (1 + p("swift") * 0.03);
+  const critChance = cls.critChance + weapon.critChance + p("keen") * 0.01;
+  const defense = Math.min(0.75, cls.defense + p("resilience") * 0.04);
   let lifesteal = 0;
   let pierce = 0;
   if (weapon.passive === "lifesteal") lifesteal = 0.12;
   if (weapon.passive === "pierce") pierce = 2;
+  const goldMult = 1 + p("fortune") * 0.05;
+  const cdMult = Math.max(0.4, 1 - p("focus") * 0.06);
   return {
     maxHp,
     damage,
@@ -575,6 +686,8 @@ export function computeStats(save: SaveData): PlayerStats {
     weapon,
     lifesteal,
     pierce,
+    goldMult,
+    cdMult,
   };
 }
 

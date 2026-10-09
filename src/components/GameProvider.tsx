@@ -13,11 +13,17 @@ import { sfx } from "@/lib/sfx";
 
 type Screen = "login" | "select" | "hub" | "play";
 
+export interface AccountProgress {
+  unlockedClasses: string[];
+  permLevels: Record<string, number>;
+}
+
 interface GameContextValue {
   ready: boolean;
   user: { id: number; username: string } | null;
   save: SaveData | null;
   savesList: SaveData[];
+  progress: AccountProgress;
   screen: Screen;
   playMap: number;
   notice: { text: string; kind: "ok" | "err" } | null;
@@ -30,6 +36,7 @@ interface GameContextValue {
   goHub: () => void;
   buyWeapon: (id: string) => Promise<void>;
   upgradeSkill: (id: string) => Promise<void>;
+  upgradePerm: (permId: string) => Promise<void>;
   equipWeapon: (id: string) => Promise<void>;
   setNotice: (t: string, kind?: "ok" | "err") => void;
 }
@@ -57,6 +64,10 @@ export default function GameProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<{ id: number; username: string } | null>(null);
   const [save, setSave] = useState<SaveData | null>(null);
   const [savesList, setSavesList] = useState<SaveData[]>([]);
+  const [progress, setProgress] = useState<AccountProgress>({
+    unlockedClasses: ["swordsman"],
+    permLevels: {},
+  });
   const [screen, setScreen] = useState<Screen>("login");
   const [playMap, setPlayMap] = useState(1);
   const [notice, setNoticeState] = useState<{ text: string; kind: "ok" | "err" } | null>(null);
@@ -77,6 +88,18 @@ export default function GameProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  async function refreshProgress() {
+    try {
+      const data = await fetchJson("/api/progress");
+      setProgress({
+        unlockedClasses: data.unlockedClasses ?? ["swordsman"],
+        permLevels: data.permLevels ?? {},
+      });
+    } catch {
+      /* keep defaults */
+    }
+  }
+
   useEffect(() => {
     (async () => {
       try {
@@ -84,7 +107,7 @@ export default function GameProvider({ children }: { children: ReactNode }) {
         if (data.user) {
           setUser(data.user);
           setScreen("select");
-          await refreshSaves();
+          await Promise.all([refreshSaves(), refreshProgress()]);
         }
       } catch {
         /* not logged in */
@@ -102,6 +125,7 @@ export default function GameProvider({ children }: { children: ReactNode }) {
     setUser(data.user);
     setScreen("select");
     setSavesList([]);
+    void refreshProgress();
   }
 
   async function login(username: string, password: string) {
@@ -111,7 +135,7 @@ export default function GameProvider({ children }: { children: ReactNode }) {
     });
     setUser(data.user);
     setScreen("select");
-    await refreshSaves();
+    await Promise.all([refreshSaves(), refreshProgress()]);
   }
 
   async function logout() {
@@ -119,10 +143,15 @@ export default function GameProvider({ children }: { children: ReactNode }) {
     setUser(null);
     setSave(null);
     setSavesList([]);
+    setProgress({ unlockedClasses: ["swordsman"], permLevels: {} });
     setScreen("login");
   }
 
   async function chooseClass(c: ClassId) {
+    if (!progress.unlockedClasses.includes(c)) {
+      setNotice("That hero is still locked.", "err");
+      return;
+    }
     const data = await fetchJson(`/api/saves/${c}`);
     setSave(data.save);
     setScreen("hub");
@@ -159,6 +188,27 @@ export default function GameProvider({ children }: { children: ReactNode }) {
       }
       await persist(next);
       await refreshSaves();
+      // report boss defeat for account-level class unlocks
+      if (result.bossDefeated) {
+        try {
+          const data = await fetchJson("/api/progress/boss", {
+            method: "POST",
+            body: JSON.stringify({ mapIndex: playMap }),
+          });
+          setProgress({
+            unlockedClasses: data.unlockedClasses ?? progress.unlockedClasses,
+            permLevels: data.permLevels ?? progress.permLevels,
+          });
+          for (const c of data.newlyUnlocked ?? []) {
+            const name =
+              c === "mage" ? "MAGE" : c === "archer" ? "ARCHER" : c.toUpperCase();
+            sfx.play("victory");
+            setNotice(`${name} UNLOCKED — a new hero awaits!`, "ok");
+          }
+        } catch {
+          /* unlock check is best-effort */
+        }
+      }
     }
   }
 
@@ -207,11 +257,33 @@ export default function GameProvider({ children }: { children: ReactNode }) {
     await refreshSaves();
   }
 
+  async function upgradePerm(permId: string) {
+    if (!save) return;
+    try {
+      const data = await fetchJson("/api/progress/perm", {
+        method: "POST",
+        body: JSON.stringify({ permId, classId: save.classId }),
+      });
+      setSave(data.save);
+      setProgress({
+        unlockedClasses: progress.unlockedClasses,
+        permLevels: data.permLevels ?? {},
+      });
+      sfx.play("levelup");
+      setNotice("Permanent upgrade forged!", "ok");
+      await refreshSaves();
+    } catch (err) {
+      sfx.play("hurt");
+      setNotice(err instanceof Error ? err.message : "Upgrade failed", "err");
+    }
+  }
+
   const value: GameContextValue = {
     ready,
     user,
     save,
     savesList,
+    progress,
     screen,
     playMap,
     notice,
@@ -224,6 +296,7 @@ export default function GameProvider({ children }: { children: ReactNode }) {
     goHub,
     buyWeapon,
     upgradeSkill,
+    upgradePerm,
     equipWeapon,
     setNotice,
   };

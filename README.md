@@ -10,13 +10,19 @@ upgrades, unique multi-phase bosses, and **account-based progression**
 
 - **Accounts** — create an account / log in. All progression is saved
   server-side per class: level & XP, skills & upgrades, weapons & equipment,
-  gold & resources, map unlocks, defeated bosses.
-- **Three classes**, each with a unique playstyle, weapon line and 3 skills:
+  gold & resources, map unlocks, defeated bosses. Account-level progression
+  (hero unlocks + forge upgrades) is shared across all of your classes.
+- **Three classes** (two are locked at first!), each with a unique
+  playstyle, weapon line and 3 skills:
   - ⚔️ **Swordsman** — melee arcs, Sword Slash / Dash Strike / Whirlwind
   - 🔮 **Mage** — elemental AoE, Fireball / Ice Nova / Lightning Bolt
-  - 🏹 **Archer** — ranged crits & mobility, Multi-Shot / Piercing Arrow / Rain of Arrows
+    — *unlocked by defeating the Map 1 boss*
+  - 🏹 **Archer** — ranged crits & mobility, Multi-Shot / Piercing Arrow /
+    Rain of Arrows — *unlocked by defeating the Map 2 boss*
 - **Aetherfall Village (hub)** — your safe haven: character stats,
-  specialty weapon shop, skill upgrade station and the dungeon gate.
+  specialty weapon shop, skill upgrade station, the dungeon gate and
+  **The Forge** — 6 account-level permanent upgrades (Vitality, Keen Eye,
+  Fortune, Resilience, Swift, Focus) shared by every hero of yours.
 - **4 hand-themed maps** with increasing difficulty: Whispering Woods →
   Cinder Caverns → Frostspire Peaks → Shadow Abyss.
 - **Exploration** — monsters, elites, gold, chests (that can hide equipment),
@@ -40,6 +46,7 @@ upgrades, unique multi-phase bosses, and **account-based progression**
 | Q / E / R | Skills 1–3 |
 | Shift / X | Dodge (i-frames) |
 | F | Interact (camp merchant / skill crystal) |
+| M | Sound on/off |
 | Esc | Abandon run |
 
 ## Local development
@@ -49,6 +56,7 @@ required) is bundled as a dev dependency and managed by `scripts/db.mjs`:
 
 ```bash
 npm install
+cp .env.example .env   # first time only
 
 # terminal 1 — starts Postgres 18 in .pgdata, creates db + schema
 node scripts/db.mjs
@@ -82,8 +90,11 @@ src/
     api/saves/[classId]                    # per-class save get/put (sanitized)
     api/shop/buy                           # weapon purchase
     api/skills/upgrade                     # skill upgrades
+    api/progress                           # account progress (unlocked heroes, forge)
+    api/progress/perm                      # forge permanent upgrades (paid by active hero)
+    api/progress/boss                      # verified boss report -> hero unlocks
     api/health                             # db health probe
-  db/                                      # drizzle schema (users, sessions, saves)
+  db/                                      # drizzle schema (users, sessions, saves, user_progress)
   lib/
     game-data.ts                           # classes, weapons, skills, maps, bosses
     save.ts                                # save (de)serialization + sanitizing
