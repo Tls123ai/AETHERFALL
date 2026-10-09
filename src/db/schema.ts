@@ -44,5 +44,22 @@ export const saves = pgTable(
   })
 );
 
+/**
+ * Account-level progression shared across all classes:
+ * which hero classes are unlocked (boss-gated) and permanent
+ * forge upgrades.
+ */
+export const userProgress = pgTable("user_progress", {
+  userId: integer("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  unlockedClasses: jsonb("unlocked_classes")
+    .notNull()
+    .default(["swordsman"]),
+  permLevels: jsonb("perm_levels").notNull().default({}),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
 export type UserRow = typeof users.$inferSelect;
 export type SaveRow = typeof saves.$inferSelect;
+export type UserProgressRow = typeof userProgress.$inferSelect;

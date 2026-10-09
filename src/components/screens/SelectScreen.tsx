@@ -1,7 +1,8 @@
 "use client";
 
 import { useGame } from "../GameProvider";
-import { CLASS_LIST } from "@/lib/game-data";
+import { CLASS_LIST, getMap } from "@/lib/game-data";
+import { sfx } from "@/lib/sfx";
 import type { ClassId } from "@/lib/types";
 
 const ICONS: Record<ClassId, string> = {
@@ -11,7 +12,7 @@ const ICONS: Record<ClassId, string> = {
 };
 
 export default function SelectScreen() {
-  const { user, savesList, chooseClass, logout } = useGame();
+  const { user, savesList, progress, chooseClass, logout } = useGame();
 
   return (
     <div className="mx-auto min-h-screen max-w-5xl px-4 py-10">
@@ -34,21 +35,34 @@ export default function SelectScreen() {
         {CLASS_LIST.map((cls) => {
           const existing = savesList.find((s) => s.classId === cls.id);
           const cleared = existing?.defeatedBosses.length ?? 0;
+          const unlocked = progress.unlockedClasses.includes(cls.id);
+          const boss = cls.unlockBoss ? getMap(cls.unlockBoss).boss : null;
           return (
             <div
               key={cls.id}
-              className="pixel-panel flex flex-col rounded-2xl p-5"
-              style={{ borderColor: cls.accent + "66" }}
+              className={`pixel-panel relative flex flex-col rounded-2xl p-5 ${
+                unlocked ? "" : "opacity-90"
+              }`}
+              style={{
+                borderColor: unlocked ? cls.accent + "66" : "rgba(71,85,105,0.4)",
+              }}
             >
               <div className="mb-3 flex items-center gap-3">
                 <div
                   className="grid h-14 w-14 place-items-center rounded-xl text-3xl animate-floaty"
-                  style={{ background: cls.accent + "22", border: `2px solid ${cls.accent}` }}
+                  style={{
+                    background: unlocked ? cls.accent + "22" : "#1e293b",
+                    border: `2px solid ${unlocked ? cls.accent : "#475569"}`,
+                    filter: unlocked ? undefined : "grayscale(0.8)",
+                  }}
                 >
-                  {ICONS[cls.id]}
+                  {unlocked ? ICONS[cls.id] : "🔒"}
                 </div>
                 <div>
-                  <h2 className="font-pixel text-sm" style={{ color: cls.accent }}>
+                  <h2
+                    className="font-pixel text-sm"
+                    style={{ color: unlocked ? cls.accent : "#94a3b8" }}
+                  >
                     {cls.name}
                   </h2>
                   <p className="font-retro text-base text-slate-400">{cls.tagline}</p>
@@ -59,7 +73,7 @@ export default function SelectScreen() {
                 {cls.description}
               </p>
 
-              {existing ? (
+              {existing && unlocked ? (
                 <div className="mb-4 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 font-retro text-base text-emerald-200">
                   <div>Level {existing.level}</div>
                   <div>
@@ -67,22 +81,45 @@ export default function SelectScreen() {
                     {existing.unlockedMaps} unlocked
                   </div>
                 </div>
-              ) : (
+              ) : existing ? null : (
                 <div className="mb-4 rounded-lg border border-slate-600/40 bg-slate-700/20 px-3 py-2 font-retro text-base text-slate-400">
                   New adventure — start at Level 1
                 </div>
               )}
 
+              {!unlocked && boss ? (
+                <div className="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 font-retro text-base text-amber-200">
+                  <div className="font-bold">🔒 HERO LOCKED</div>
+                  <div className="text-amber-100/80">
+                    Defeat <span className="text-amber-300">{boss.name}</span> (Map{" "}
+                    {cls.unlockBoss!} boss) with any hero to awaken {cls.name}.
+                  </div>
+                </div>
+              ) : null}
+
               <button
-                onClick={() => chooseClass(cls.id)}
-                className="pixel-btn mt-auto rounded-md bg-amber-500 py-3 text-black hover:bg-amber-400"
+                disabled={!unlocked}
+                onClick={() => {
+                  sfx.play("ui");
+                  void chooseClass(cls.id);
+                }}
+                className="pixel-btn mt-auto rounded-md bg-amber-500 py-3 text-black hover:bg-amber-400 disabled:bg-slate-700 disabled:text-slate-400"
               >
-                {existing ? "CONTINUE" : "BEGIN"}
+                {!unlocked
+                  ? "LOCKED"
+                  : existing
+                    ? "CONTINUE"
+                    : "BEGIN"}
               </button>
             </div>
           );
         })}
       </div>
+
+      <p className="font-retro mt-8 text-center text-base text-slate-500">
+        Hero unlocks and Forge upgrades are saved to your account and shared
+        across all of your heroes.
+      </p>
     </div>
   );
 }

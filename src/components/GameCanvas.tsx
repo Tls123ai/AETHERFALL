@@ -9,14 +9,24 @@ export default function GameCanvas({
   save,
   mapIndex,
   onComplete,
+  onInteract,
+  paused,
+  perms,
 }: {
   save: SaveData;
   mapIndex: number;
   onComplete: (r: RunResult) => void;
+  onInteract?: (kind: "merchant" | "skill") => void;
+  paused?: boolean;
+  perms?: Record<string, number>;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<GameEngine | null>(null);
+  const interactRef = useRef(onInteract);
+  useEffect(() => {
+    interactRef.current = onInteract;
+  }, [onInteract]);
 
   useEffect(() => {
     if (!containerRef.current || !canvasRef.current) return;
@@ -26,6 +36,8 @@ export default function GameCanvas({
       save,
       mapIndex,
       onComplete,
+      onInteract: (k) => interactRef.current?.(k),
+      perms,
     });
     engineRef.current = engine;
     engine.start();
@@ -35,6 +47,22 @@ export default function GameCanvas({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // pause while a camp service modal is open
+  useEffect(() => {
+    engineRef.current?.setPaused(!!paused);
+  }, [paused]);
+
+  // live-save updates after in-map purchases / upgrades
+  useEffect(() => {
+    engineRef.current?.setSave(save);
+  }, [save]);
+
+  // live permanent-upgrade updates
+  useEffect(() => {
+    engineRef.current?.setPerms(perms ?? {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [perms?.vitality, perms?.keen, perms?.fortune, perms?.resilience, perms?.swift, perms?.focus]);
 
   const cls = CLASSES[save.classId];
 
@@ -60,6 +88,12 @@ export default function GameCanvas({
             <div id="g-boss-fill" className="h-full w-full bg-gradient-to-r from-red-500 to-red-700" />
           </div>
         </div>
+
+        {/* Boss gate status */}
+        <div
+          id="g-gate"
+          className="absolute left-1/2 top-14 -translate-x-1/2 rounded border border-amber-500/40 bg-black/60 px-3 py-1 text-[11px] font-bold tracking-wide text-amber-200"
+        />
 
         {/* Banner */}
         <div
@@ -123,7 +157,7 @@ export default function GameCanvas({
 
         {/* Controls hint */}
         <div className="absolute bottom-3 left-1/2 -translate-x-1/2 text-center text-[10px] text-white/50">
-          WASD move · Mouse aim · Click/Space attack · Q/E/R skills · Shift dodge · Esc abandon
+          WASD move · Mouse aim · Click/Space attack · Q/E/R skills · Shift dodge · F interact · M sound · Esc abandon
         </div>
       </div>
 

@@ -22,6 +22,8 @@ export interface ClassDef {
   defense: number; // 0..1 damage reduction
   starterWeapon: string;
   skillIds: string[];
+  /** map index whose boss must be defeated (by any class) to unlock */
+  unlockBoss: number | null;
 }
 
 export const CLASSES: Record<ClassId, ClassDef> = {
@@ -41,6 +43,7 @@ export const CLASSES: Record<ClassId, ClassDef> = {
     defense: 0.18,
     starterWeapon: "iron_sword",
     skillIds: ["sword_slash", "dash_strike", "whirlwind"],
+    unlockBoss: null,
   },
   mage: {
     id: "mage",
@@ -58,6 +61,7 @@ export const CLASSES: Record<ClassId, ClassDef> = {
     defense: 0.06,
     starterWeapon: "fire_staff",
     skillIds: ["fireball", "ice_nova", "lightning_bolt"],
+    unlockBoss: 1,
   },
   archer: {
     id: "archer",
@@ -75,6 +79,7 @@ export const CLASSES: Record<ClassId, ClassDef> = {
     defense: 0.08,
     starterWeapon: "longbow",
     skillIds: ["multi_shot", "piercing_arrow", "rain_of_arrows"],
+    unlockBoss: 2,
   },
 };
 
@@ -213,6 +218,21 @@ export const WEAPONS: Record<string, WeaponDef> = {
     description: "Pure arcane power. Siphons life from hits.",
     passive: "lifesteal",
     color: "#e879f9",
+  },
+  storm_staff: {
+    id: "storm_staff",
+    name: "Storm Staff",
+    classId: "mage",
+    rarity: "legendary",
+    price: 0,
+    damage: 36,
+    attackSpeed: 1.4,
+    critChance: 0.1,
+    description:
+      "Fell from the Void Emperor's grasp. Every bolt crackles with searing charge.",
+    passive: "burn",
+    color: "#a78bfa",
+    bossOnly: true,
   },
 
   // ----- Archer -----
@@ -400,14 +420,21 @@ export const MAPS: MapDef[] = [
     eliteCount: 1,
     rewardGold: 200,
     rewardResources: 6,
-    rewardWeapon: "flame_sword",
+    rewardWeapons: {
+      swordsman: "flame_sword",
+      mage: "ice_staff",
+      archer: "flame_bow",
+    },
     boss: {
       id: "gloomfang",
       name: "Gloomfang, Slime King",
       maxHp: 420,
       color: "#65a30d",
       description: "A gelatinous monarch that splits and splatters.",
+      attacks: ["radial", "spit", "split"],
     },
+    decor: ["tree", "bush", "mushroom", "stump"],
+    killQuota: 0.6,
   },
   {
     index: 2,
@@ -421,14 +448,21 @@ export const MAPS: MapDef[] = [
     eliteCount: 2,
     rewardGold: 320,
     rewardResources: 9,
-    rewardWeapon: "ice_staff",
+    rewardWeapons: {
+      swordsman: "poison_blade",
+      mage: "lightning_staff",
+      archer: "poison_bow",
+    },
     boss: {
       id: "magmalord",
       name: "Magmalord Ignus",
       maxHp: 820,
       color: "#ea580c",
       description: "A molten titan that rains fire from above.",
+      attacks: ["meteor", "radial", "charge"],
     },
+    decor: ["stalag", "crystal", "rock", "ember"],
+    killQuota: 0.6,
   },
   {
     index: 3,
@@ -442,14 +476,21 @@ export const MAPS: MapDef[] = [
     eliteCount: 2,
     rewardGold: 460,
     rewardResources: 12,
-    rewardWeapon: "rapid_bow",
+    rewardWeapons: {
+      swordsman: "critical_sword",
+      mage: "arcane_staff",
+      archer: "rapid_bow",
+    },
     boss: {
       id: "frostqueen",
       name: "Frost Queen Vael",
       maxHp: 1380,
       color: "#38bdf8",
       description: "A glacial sovereign that freezes the ground.",
+      attacks: ["frost_ring", "shards", "summon"],
     },
+    decor: ["ice", "pine", "snow", "spike"],
+    killQuota: 0.65,
   },
   {
     index: 4,
@@ -463,14 +504,21 @@ export const MAPS: MapDef[] = [
     eliteCount: 3,
     rewardGold: 680,
     rewardResources: 16,
-    rewardWeapon: "lifesteal_sword",
+    rewardWeapons: {
+      swordsman: "lifesteal_sword",
+      mage: "storm_staff",
+      archer: "piercing_bow",
+    },
     boss: {
       id: "voidemperor",
       name: "Void Emperor Nyx",
       maxHp: 2400,
       color: "#a855f7",
       description: "The devourer of worlds, master of the dark.",
+      attacks: ["spiral", "blink", "beam"],
     },
+    decor: ["obelisk", "fog", "bones", "rune"],
+    killQuota: 0.7,
   },
 ];
 
@@ -496,6 +544,97 @@ export function getMap(index: number): MapDef {
   return m;
 }
 
+export interface PermUpgradeDef {
+  id: string;
+  name: string;
+  icon: string;
+  description: string;
+  perLevel: string;
+  maxLevel: number;
+  /** gold cost for level n+1 = baseGold * (n+1) */
+  baseGold: number;
+  /** resource cost for level n+1 = baseRes * (n+1) */
+  baseRes: number;
+}
+
+/**
+ * Account-level permanent upgrades (The Forge). Shared across all
+ * classes of an account; paid from the active hero's purse.
+ */
+export const PERM_UPGRADES: PermUpgradeDef[] = [
+  {
+    id: "vitality",
+    name: "Vitality",
+    icon: "❤",
+    description: "Reinforced flesh and spirit.",
+    perLevel: "+10 Max HP",
+    maxLevel: 5,
+    baseGold: 150,
+    baseRes: 1,
+  },
+  {
+    id: "keen",
+    name: "Keen Eye",
+    icon: "👁",
+    description: "You see the gaps in their armor.",
+    perLevel: "+1% Crit chance",
+    maxLevel: 5,
+    baseGold: 200,
+    baseRes: 2,
+  },
+  {
+    id: "fortune",
+    name: "Fortune",
+    icon: "⛀",
+    description: "Coin and fate favour you.",
+    perLevel: "+5% Gold find",
+    maxLevel: 5,
+    baseGold: 250,
+    baseRes: 2,
+  },
+  {
+    id: "resilience",
+    name: "Resilience",
+    icon: "🛡",
+    description: "Blisters become battle scars.",
+    perLevel: "+4% Damage reduction",
+    maxLevel: 5,
+    baseGold: 200,
+    baseRes: 2,
+  },
+  {
+    id: "swift",
+    name: "Swift",
+    icon: "👟",
+    description: "Feathers on your feet.",
+    perLevel: "+3% Move speed",
+    maxLevel: 5,
+    baseGold: 180,
+    baseRes: 1,
+  },
+  {
+    id: "focus",
+    name: "Focus",
+    icon: "⏳",
+    description: "Meditation between strikes.",
+    perLevel: "-6% Skill cooldowns",
+    maxLevel: 5,
+    baseGold: 220,
+    baseRes: 2,
+  },
+];
+
+export function permCost(def: PermUpgradeDef, currentLevel: number) {
+  return {
+    gold: def.baseGold * (currentLevel + 1),
+    resources: def.baseRes * (currentLevel + 1),
+  };
+}
+
+export function getPermDef(id: string): PermUpgradeDef | undefined {
+  return PERM_UPGRADES.find((p) => p.id === id);
+}
+
 export interface PlayerStats {
   maxHp: number;
   damage: number;
@@ -506,22 +645,37 @@ export interface PlayerStats {
   weapon: WeaponDef;
   lifesteal: number;
   pierce: number;
+  /** multiplier applied to gold earned (Fortune) */
+  goldMult: number;
+  /** multiplier applied to skill cooldowns (Focus) */
+  cdMult: number;
 }
 
-export function computeStats(save: SaveData): PlayerStats {
+/**
+ * Compute combat stats for a class save, optionally with
+ * account-level permanent forge upgrades applied.
+ */
+export function computeStats(
+  save: SaveData,
+  permLevels: Record<string, number> = {}
+): PlayerStats {
   const cls = CLASSES[save.classId];
   const weapon = WEAPONS[save.equippedWeapon] ?? WEAPONS[cls.starterWeapon];
   const level = Math.max(1, save.level);
-  const maxHp = cls.maxHp + (level - 1) * 18;
+  const p = (id: string) => Math.max(0, Math.min(5, Math.floor(permLevels[id] || 0)));
+
+  const maxHp = cls.maxHp + (level - 1) * 18 + p("vitality") * 10;
   const damage = weapon.damage + (level - 1) * 4;
   const attackSpeed = weapon.attackSpeed;
-  const moveSpeed = cls.moveSpeed;
-  const critChance = cls.critChance + weapon.critChance;
-  const defense = cls.defense;
+  const moveSpeed = cls.moveSpeed * (1 + p("swift") * 0.03);
+  const critChance = cls.critChance + weapon.critChance + p("keen") * 0.01;
+  const defense = Math.min(0.75, cls.defense + p("resilience") * 0.04);
   let lifesteal = 0;
   let pierce = 0;
   if (weapon.passive === "lifesteal") lifesteal = 0.12;
   if (weapon.passive === "pierce") pierce = 2;
+  const goldMult = 1 + p("fortune") * 0.05;
+  const cdMult = Math.max(0.4, 1 - p("focus") * 0.06);
   return {
     maxHp,
     damage,
@@ -532,6 +686,8 @@ export function computeStats(save: SaveData): PlayerStats {
     weapon,
     lifesteal,
     pierce,
+    goldMult,
+    cdMult,
   };
 }
 

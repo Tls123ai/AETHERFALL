@@ -2,26 +2,30 @@
 
 import { useState } from "react";
 import { useGame } from "../GameProvider";
+import VillageCanvas from "../VillageCanvas";
 import {
   CLASSES,
   WEAPONS,
   SKILLS,
   MAPS,
+  PERM_UPGRADES,
+  permCost,
   computeStats,
   type PlayerStats,
+  type PermUpgradeDef,
 } from "@/lib/game-data";
-import { RARITY_COLORS, type WeaponDef, type SkillDef } from "@/lib/types";
+import { RARITY_COLORS } from "@/lib/types";
+import { WeaponCard, SkillCard, PASSIVE_LABEL } from "../cards";
 
-type Tab = "character" | "weapons" | "skills" | "maps";
+type Tab = "character" | "weapons" | "skills" | "maps" | "forge";
 
-const PASSIVE_LABEL: Record<string, string> = {
-  burn: "Burns enemies (DoT)",
-  poison: "Poisons enemies (DoT)",
-  lifesteal: "Heals on hit",
-  slow: "Chills & slows",
-  pierce: "Arrows pierce 2 foes",
-  crit: "Huge crit chance",
-  heavy: "Slow but crushing",
+/** NPC who runs each hub service. */
+const TAB_META: Record<Tab, { icon: string; npc: string; title: string }> = {
+  character: { icon: "🛡", npc: "Your Hero", title: "CHARACTER" },
+  weapons: { icon: "⚒", npc: "Branda, Bladesmith", title: "WEAPON SHOP" },
+  skills: { icon: "✦", npc: "Master Oryn", title: "SKILL STATION" },
+  maps: { icon: "🗺", npc: "Warden Pell", title: "DUNGEON GATE" },
+  forge: { icon: "🔥", npc: "Forgemaster Koda", title: "THE FORGE" },
 };
 
 function StatBar({ label, value }: { label: string; value: string }) {
@@ -34,17 +38,37 @@ function StatBar({ label, value }: { label: string; value: string }) {
 }
 
 export default function HubScreen() {
-  const { save, user, buyWeapon, upgradeSkill, equipWeapon, enterMap, chooseClass, logout, notice } =
-    useGame();
+  const {
+    save,
+    user,
+    progress,
+    buyWeapon,
+    upgradeSkill,
+    upgradePerm,
+    equipWeapon,
+    enterMap,
+    chooseClass,
+    logout,
+    notice,
+  } = useGame();
   const [tab, setTab] = useState<Tab>("character");
   if (!save) return null;
   const cls = CLASSES[save.classId];
-  const stats: PlayerStats = computeStats(save);
-  const weapons = Object.values(WEAPONS).filter((w) => w.classId === save.classId);
+  const stats: PlayerStats = computeStats(save, progress.permLevels);
+  const weapons = Object.values(WEAPONS).filter(
+    (w) => w.classId === save.classId && !w.bossOnly
+  );
   const skills = cls.skillIds.map((id) => SKILLS[id]);
 
   return (
     <div className="mx-auto min-h-screen max-w-6xl px-4 py-6">
+      <div className="mb-4 text-center">
+        <h1 className="font-pixel text-lg text-amber-300">AETHERFALL VILLAGE</h1>
+        <p className="font-retro text-lg text-slate-400">
+          Your safe haven — prepare, trade and grow before descending.
+        </p>
+      </div>
+      <VillageCanvas classId={save.classId} />
       {notice && (
         <div
           className={`mb-4 rounded-md border px-4 py-2 font-retro text-lg ${
@@ -98,18 +122,30 @@ export default function HubScreen() {
       </header>
 
       {/* Tabs */}
-      <nav className="mb-5 grid grid-cols-2 gap-2 sm:grid-cols-4">
-        {(["character", "weapons", "skills", "maps"] as Tab[]).map((t) => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            className={`pixel-btn rounded-md px-3 py-3 ${
-              tab === t ? "bg-amber-500 text-black" : "bg-slate-800 text-slate-300"
-            }`}
-          >
-            {t === "character" ? "CHARACTER" : t === "weapons" ? "WEAPON SHOP" : t === "skills" ? "SKILLS" : "MAPS"}
-          </button>
-        ))}
+      <nav className="mb-5 grid grid-cols-2 gap-2 sm:grid-cols-5">
+        {(["character", "weapons", "skills", "maps", "forge"] as Tab[]).map((t) => {
+          const meta = TAB_META[t];
+          return (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`pixel-btn rounded-md px-3 py-3 text-left ${
+                tab === t ? "bg-amber-500 text-black" : "bg-slate-800 text-slate-300"
+              }`}
+            >
+              <span className="block text-sm">
+                {meta.icon} {meta.title}
+              </span>
+              <span
+                className={`font-retro block text-xs font-normal ${
+                  tab === t ? "text-black/70" : "text-slate-500"
+                }`}
+              >
+                {meta.npc}
+              </span>
+            </button>
+          );
+        })}
       </nav>
 
       <div className="pixel-panel rounded-2xl p-5">
@@ -245,96 +281,86 @@ export default function HubScreen() {
             </div>
           </div>
         )}
+
+        {tab === "forge" && (
+          <div>
+            <h3 className="font-pixel mb-1 text-xs text-orange-300">
+              THE FORGE — PERMANENT UPGRADES
+            </h3>
+            <p className="font-retro mb-4 text-base text-slate-400">
+              Forgemaster Koda shapes your <span className="text-orange-200">account</span>:
+              these upgrades are shared by every hero of yours and never reset.
+              Costs are paid from <span className="text-amber-200">{cls.name}&apos;s</span> purse.
+            </p>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {PERM_UPGRADES.map((p) => (
+                <PermCard
+                  key={p.id}
+                  def={p}
+                  level={progress.permLevels[p.id] ?? 0}
+                  gold={save.gold}
+                  resources={save.resources}
+                  onUpgrade={() => upgradePerm(p.id)}
+                />
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function WeaponCard({
-  w,
-  save,
-  onBuy,
-  onEquip,
-}: {
-  w: WeaponDef;
-  save: ReturnType<typeof useGame>["save"];
-  onBuy: () => void;
-  onEquip: () => void;
-}) {
-  const owned = save?.ownedWeapons.includes(w.id);
-  const equipped = save?.equippedWeapon === w.id;
-  const afford = (save?.gold ?? 0) >= w.price;
-  return (
-    <div
-      className="flex flex-col rounded-xl border-2 p-3"
-      style={{ borderColor: RARITY_COLORS[w.rarity] + "66", background: w.color + "10" }}
-    >
-      <div className="flex items-center justify-between">
-        <span className="font-pixel text-[0.62rem]" style={{ color: RARITY_COLORS[w.rarity] }}>
-          {w.name}
-        </span>
-        <span className="font-retro text-xs uppercase" style={{ color: RARITY_COLORS[w.rarity] }}>
-          {w.rarity}
-        </span>
-      </div>
-      <p className="font-retro mt-1 min-h-[2.6rem] text-base text-slate-300">{w.description}</p>
-      <div className="font-retro mb-2 grid grid-cols-2 gap-1 text-base text-slate-200">
-        <span>DMG {w.damage}</span>
-        <span>SPD {w.attackSpeed.toFixed(1)}</span>
-        <span>CRIT {(w.critChance * 100).toFixed(0)}%</span>
-        {w.passive && <span className="col-span-2 text-emerald-300">{PASSIVE_LABEL[w.passive]}</span>}
-      </div>
-      {equipped ? (
-        <span className="pixel-btn rounded-md bg-emerald-600 py-2 text-center text-white">EQUIPPED</span>
-      ) : owned ? (
-        <button onClick={onEquip} className="pixel-btn rounded-md bg-slate-600 py-2 text-white">
-          EQUIP
-        </button>
-      ) : (
-        <button
-          onClick={onBuy}
-          disabled={!afford}
-          className="pixel-btn rounded-md bg-amber-500 py-2 text-black"
-        >
-          BUY ⛀ {w.price}
-        </button>
-      )}
-    </div>
-  );
-}
-
-function SkillCard({
-  s,
-  save,
+function PermCard({
+  def,
+  level,
+  gold,
+  resources,
   onUpgrade,
 }: {
-  s: SkillDef;
-  save: ReturnType<typeof useGame>["save"];
+  def: PermUpgradeDef;
+  level: number;
+  gold: number;
+  resources: number;
   onUpgrade: () => void;
 }) {
-  const level = save?.skillLevels[s.id] ?? 1;
-  const maxed = level >= s.maxLevel;
-  const afford = (save?.resources ?? 0) >= s.upgradeCost;
+  const maxed = level >= def.maxLevel;
+  const cost = permCost(def, level);
+  const afford = gold >= cost.gold && resources >= cost.resources;
   return (
-    <div className="flex flex-col rounded-xl border-2 border-violet-500/40 bg-violet-500/5 p-4">
+    <div className="flex flex-col rounded-xl border-2 border-orange-500/40 bg-orange-500/5 p-4">
       <div className="flex items-center justify-between">
-        <span className="font-pixel text-[0.62rem] text-violet-200">{s.name}</span>
-        <span className="rounded bg-slate-800 px-2 py-0.5 font-retro text-sm text-amber-300">
-          {s.key}
+        <span className="font-pixel text-[0.62rem] text-orange-200">
+          {def.icon} {def.name}
+        </span>
+        <span className="font-retro text-base text-amber-300">
+          {level} / {def.maxLevel}
         </span>
       </div>
-      <p className="font-retro mt-1 text-base text-slate-300">{s.description}</p>
-      <p className="font-retro text-base text-emerald-300">{s.effect}</p>
-      <div className="mt-2 font-retro text-lg text-white">
-        Level {level} / {s.maxLevel}
+      <p className="font-retro mt-1 text-base text-slate-300">{def.description}</p>
+      <p className="font-retro text-base text-emerald-300">{def.perLevel}</p>
+      {/* level pips */}
+      <div className="mt-2 flex gap-1">
+        {Array.from({ length: def.maxLevel }).map((_, i) => (
+          <span
+            key={i}
+            className={`h-2.5 w-5 rounded-sm ${
+              i < level ? "bg-orange-400" : "bg-slate-700"
+            }`}
+          />
+        ))}
       </div>
       <button
         onClick={onUpgrade}
         disabled={maxed || !afford}
-        className="pixel-btn mt-2 rounded-md bg-violet-600 py-2 text-white"
+        className="pixel-btn mt-3 rounded-md bg-orange-600 py-2 text-white"
       >
-        {maxed ? "MAXED" : `UPGRADE ⚡${s.upgradeCost}`}
+        {maxed
+          ? "MAXED"
+          : `FORGE  ⛀${cost.gold} + ⚡${cost.resources}`}
       </button>
     </div>
   );
 }
+
+
