@@ -214,6 +214,21 @@ export const WEAPONS: Record<string, WeaponDef> = {
     passive: "lifesteal",
     color: "#e879f9",
   },
+  storm_staff: {
+    id: "storm_staff",
+    name: "Storm Staff",
+    classId: "mage",
+    rarity: "legendary",
+    price: 0,
+    damage: 36,
+    attackSpeed: 1.4,
+    critChance: 0.1,
+    description:
+      "Fell from the Void Emperor's grasp. Every bolt crackles with searing charge.",
+    passive: "burn",
+    color: "#a78bfa",
+    bossOnly: true,
+  },
 
   // ----- Archer -----
   longbow: {
@@ -400,14 +415,21 @@ export const MAPS: MapDef[] = [
     eliteCount: 1,
     rewardGold: 200,
     rewardResources: 6,
-    rewardWeapon: "flame_sword",
+    rewardWeapons: {
+      swordsman: "flame_sword",
+      mage: "ice_staff",
+      archer: "flame_bow",
+    },
     boss: {
       id: "gloomfang",
       name: "Gloomfang, Slime King",
       maxHp: 420,
       color: "#65a30d",
       description: "A gelatinous monarch that splits and splatters.",
+      attacks: ["radial", "spit", "split"],
     },
+    decor: ["tree", "bush", "mushroom", "stump"],
+    killQuota: 0.6,
   },
   {
     index: 2,
@@ -421,14 +443,21 @@ export const MAPS: MapDef[] = [
     eliteCount: 2,
     rewardGold: 320,
     rewardResources: 9,
-    rewardWeapon: "ice_staff",
+    rewardWeapons: {
+      swordsman: "poison_blade",
+      mage: "lightning_staff",
+      archer: "poison_bow",
+    },
     boss: {
       id: "magmalord",
       name: "Magmalord Ignus",
       maxHp: 820,
       color: "#ea580c",
       description: "A molten titan that rains fire from above.",
+      attacks: ["meteor", "radial", "charge"],
     },
+    decor: ["stalag", "crystal", "rock", "ember"],
+    killQuota: 0.6,
   },
   {
     index: 3,
@@ -442,14 +471,21 @@ export const MAPS: MapDef[] = [
     eliteCount: 2,
     rewardGold: 460,
     rewardResources: 12,
-    rewardWeapon: "rapid_bow",
+    rewardWeapons: {
+      swordsman: "critical_sword",
+      mage: "arcane_staff",
+      archer: "rapid_bow",
+    },
     boss: {
       id: "frostqueen",
       name: "Frost Queen Vael",
       maxHp: 1380,
       color: "#38bdf8",
       description: "A glacial sovereign that freezes the ground.",
+      attacks: ["frost_ring", "shards", "summon"],
     },
+    decor: ["ice", "pine", "snow", "spike"],
+    killQuota: 0.65,
   },
   {
     index: 4,
@@ -463,14 +499,21 @@ export const MAPS: MapDef[] = [
     eliteCount: 3,
     rewardGold: 680,
     rewardResources: 16,
-    rewardWeapon: "lifesteal_sword",
+    rewardWeapons: {
+      swordsman: "lifesteal_sword",
+      mage: "storm_staff",
+      archer: "piercing_bow",
+    },
     boss: {
       id: "voidemperor",
       name: "Void Emperor Nyx",
       maxHp: 2400,
       color: "#a855f7",
       description: "The devourer of worlds, master of the dark.",
+      attacks: ["spiral", "blink", "beam"],
     },
+    decor: ["obelisk", "fog", "bones", "rune"],
+    killQuota: 0.7,
   },
 ];
 

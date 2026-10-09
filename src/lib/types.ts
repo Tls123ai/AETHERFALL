@@ -19,6 +19,8 @@ export interface WeaponDef {
   passive?: "burn" | "poison" | "lifesteal" | "slow" | "pierce" | "crit" | "heavy";
   color: string;
   starter?: boolean;
+  /** granted only as a boss reward, never sold in shops */
+  bossOnly?: boolean;
 }
 
 export interface SkillDef {
@@ -41,6 +43,8 @@ export interface BossDef {
   maxHp: number;
   color: string;
   description: string;
+  /** attack pattern ids the boss cycles through (see GameEngine) */
+  attacks: string[];
 }
 
 export interface MapDef {
@@ -58,8 +62,12 @@ export interface MapDef {
   boss: BossDef;
   rewardGold: number;
   rewardResources: number;
-  /** weapon reward id granted on boss defeat */
-  rewardWeapon: string;
+  /** weapon reward id granted on boss defeat, per class */
+  rewardWeapons: Record<ClassId, string>;
+  /** decorative props scattered on the ground (visual only) */
+  decor: string[];
+  /** fraction of foes that must fall before the boss gate opens */
+  killQuota: number;
 }
 
 export interface SaveData {

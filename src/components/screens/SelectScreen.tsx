@@ -2,6 +2,7 @@
 
 import { useGame } from "../GameProvider";
 import { CLASS_LIST } from "@/lib/game-data";
+import { sfx } from "@/lib/sfx";
 import type { ClassId } from "@/lib/types";
 
 const ICONS: Record<ClassId, string> = {
@@ -74,7 +75,10 @@ export default function SelectScreen() {
               )}
 
               <button
-                onClick={() => chooseClass(cls.id)}
+                onClick={() => {
+                  sfx.play("ui");
+                  void chooseClass(cls.id);
+                }}
                 className="pixel-btn mt-auto rounded-md bg-amber-500 py-3 text-black hover:bg-amber-400"
               >
                 {existing ? "CONTINUE" : "BEGIN"}

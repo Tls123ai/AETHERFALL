@@ -3,10 +3,14 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:host": "next dev -H 0.0.0.0",
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "db": "node scripts/db.mjs",
+    "test:data": "node --experimental-strip-types --no-warnings scripts/check-data.mjs",
+    "test:engine": "node --experimental-strip-types --no-warnings --import ./scripts/register.mjs scripts/engine-test.ts"
   },
   "dependencies": {
     "dotenv": "17.3.1",
@@ -23,6 +27,7 @@
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "drizzle-kit": "0.31.10",
+    "embedded-postgres": "^18.4.0-beta.17",
     "eslint": "9.39.4",
     "eslint-config-next": "16.2.6",
     "postcss": "8.5.8",

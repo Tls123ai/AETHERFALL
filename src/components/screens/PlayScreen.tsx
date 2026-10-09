@@ -3,13 +3,24 @@
 import { useState } from "react";
 import { useGame } from "../GameProvider";
 import GameCanvas from "../GameCanvas";
+import CampModal from "../CampModal";
 import type { RunResult } from "@/lib/types";
 import { WEAPONS, getMap } from "@/lib/game-data";
 
 export default function PlayScreen() {
-  const { save, playMap, applyRunResult, goHub } = useGame();
+  const {
+    save,
+    playMap,
+    applyRunResult,
+    goHub,
+    buyWeapon,
+    upgradeSkill,
+    equipWeapon,
+    notice,
+  } = useGame();
   const [result, setResult] = useState<RunResult | null>(null);
   const [runKey, setRunKey] = useState(0);
+  const [camp, setCamp] = useState<"merchant" | "skill" | null>(null);
 
   if (!save) {
     goHub();
@@ -38,7 +49,26 @@ export default function PlayScreen() {
 
   return (
     <div className="relative h-screen w-screen overflow-hidden">
-      <GameCanvas key={runKey} save={save} mapIndex={playMap} onComplete={handleComplete} />
+      <GameCanvas
+        key={runKey}
+        save={save}
+        mapIndex={playMap}
+        onComplete={handleComplete}
+        onInteract={(k) => setCamp(k)}
+        paused={camp !== null && !result}
+      />
+
+      {camp && !result && (
+        <CampModal
+          kind={camp}
+          save={save}
+          onClose={() => setCamp(null)}
+          onBuy={(id) => void buyWeapon(id)}
+          onUpgrade={(id) => void upgradeSkill(id)}
+          onEquip={(id) => void equipWeapon(id)}
+          notice={notice}
+        />
+      )}
 
       {result && (
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/70">
@@ -48,18 +78,27 @@ export default function PlayScreen() {
 
             <div className="my-4 space-y-1 font-retro text-xl">
               <div className="text-amber-300">+ {result.goldEarned} gold</div>
-              <div className="text-violet-300">+ {result.resourcesEarned} resources</div>
+              <div className="text-violet-300">
+                + {result.resourcesEarned} resources
+              </div>
               <div className="text-sky-300">
                 Reached Level {result.level}
               </div>
               {result.bossDefeated && (
-                <div className="text-emerald-300">Boss defeated — next map unlocked!</div>
+                <div className="text-emerald-300">
+                  Boss defeated — next map unlocked!
+                </div>
               )}
               {result.weaponRewards.map((w) => (
                 <div key={w} className="text-emerald-200">
                   Looted: {WEAPONS[w]?.name ?? w}
                 </div>
               ))}
+              {result.outcome === "death" && (
+                <div className="pt-1 text-slate-400">
+                  Your account progress is safe — return and prepare again.
+                </div>
+              )}
             </div>
 
             <div className="mt-5 flex flex-col gap-3">

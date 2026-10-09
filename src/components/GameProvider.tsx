@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import type { SaveData, RunResult, ClassId } from "@/lib/types";
+import { sfx } from "@/lib/sfx";
 
 type Screen = "login" | "select" | "hub" | "play";
 
@@ -166,29 +167,42 @@ export default function GameProvider({ children }: { children: ReactNode }) {
   }
 
   async function buyWeapon(id: string) {
-    const data = await fetchJson("/api/shop/buy", {
-      method: "POST",
-      body: JSON.stringify({ weaponId: id }),
-    });
-    setSave(data.save);
-    setNotice(`${id} purchased!`, "ok");
-    await refreshSaves();
+    try {
+      const data = await fetchJson("/api/shop/buy", {
+        method: "POST",
+        body: JSON.stringify({ weaponId: id }),
+      });
+      setSave(data.save);
+      sfx.play("buy");
+      setNotice("Weapon purchased!", "ok");
+      await refreshSaves();
+    } catch (err) {
+      sfx.play("hurt");
+      setNotice(err instanceof Error ? err.message : "Purchase failed", "err");
+    }
   }
 
   async function upgradeSkill(id: string) {
-    const data = await fetchJson("/api/skills/upgrade", {
-      method: "POST",
-      body: JSON.stringify({ skillId: id }),
-    });
-    setSave(data.save);
-    setNotice("Skill upgraded!", "ok");
-    await refreshSaves();
+    try {
+      const data = await fetchJson("/api/skills/upgrade", {
+        method: "POST",
+        body: JSON.stringify({ skillId: id }),
+      });
+      setSave(data.save);
+      sfx.play("levelup");
+      setNotice("Skill upgraded!", "ok");
+      await refreshSaves();
+    } catch (err) {
+      sfx.play("hurt");
+      setNotice(err instanceof Error ? err.message : "Upgrade failed", "err");
+    }
   }
 
   async function equipWeapon(id: string) {
     if (!save) return;
     const next = { ...save, equippedWeapon: id };
-    const server = await persist(next);
+    await persist(next);
+    sfx.play("ui");
     setNotice("Weapon equipped.", "ok");
     await refreshSaves();
   }

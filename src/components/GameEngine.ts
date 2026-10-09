@@ -1,4 +1,4 @@
-import type { SaveData, RunResult, ClassId } from "@/lib/types";
+import type { SaveData, RunResult } from "@/lib/types";
 import {
   CLASSES,
   WEAPONS,
@@ -9,8 +9,9 @@ import {
   type PlayerStats,
   type ClassDef,
 } from "@/lib/game-data";
+import { sfx } from "@/lib/sfx";
 
-type EnemyType = "grunt" | "shooter" | "elite";
+type EnemyType = "grunt" | "shooter" | "elite" | "mini";
 type ProjKind = "arrow" | "bolt" | "orb" | "boss";
 
 interface Player {
@@ -24,6 +25,8 @@ interface Player {
   dodgeCd: number;
   dodgeTime: number;
   invuln: number;
+  slowTime: number;
+  slowFactor: number;
   skillCd: [number, number, number];
   hitFlash: number;
   walkPhase: number;
@@ -123,6 +126,7 @@ interface Chest {
   y: number;
   opened: boolean;
   t: number;
+  rich?: boolean;
 }
 
 interface Boss {
@@ -143,6 +147,11 @@ interface Boss {
   name: string;
   color: string;
   id: string;
+  state: "idle" | "telegraph";
+  pattern: string;
+  attackT: number;
+  spiral: { t: number; rot: number; step: number } | null;
+  data: { x: number; y: number }[];
   _touch?: number;
 }
 
@@ -153,11 +162,121 @@ interface Rect {
   h: number;
 }
 
+interface Gate {
+  x: number;
+  y: number;
+  open: boolean;
+}
+
+interface Crate {
+  x: number;
+  y: number;
+  hp: number;
+  maxHp: number;
+}
+
+interface Decor {
+  x: number;
+  y: number;
+  kind: string;
+  seed: number;
+}
+
+interface Zone {
+  x: number;
+  y: number;
+  r: number;
+  life: number;
+  maxLife: number;
+  damage: number;
+  dealt: boolean;
+  color: string;
+}
+
+interface Ring {
+  x: number;
+  y: number;
+  r: number;
+  vr: number;
+  life: number;
+  damage: number;
+  hit: boolean;
+  color: string;
+}
+
+interface Beam {
+  ax: number;
+  ay: number;
+  bx: number;
+  by: number;
+  life: number;
+  maxLife: number;
+  color: string;
+}
+
+interface BossPatternDef {
+  id: string;
+  minPhase: number;
+  cd: number;
+  tele: number;
+}
+
+/** Per-boss attack rotations — gives each boss a distinct identity. */
+const BOSS_PATTERNS: Record<string, BossPatternDef[]> = {
+  gloomfang: [
+    { id: "radial", minPhase: 1, cd: 2.7, tele: 0.4 },
+    { id: "spit", minPhase: 1, cd: 3.2, tele: 0.5 },
+    { id: "split", minPhase: 2, cd: 9, tele: 0.8 },
+  ],
+  magmalord: [
+    { id: "meteor", minPhase: 1, cd: 4.6, tele: 1.1 },
+    { id: "radial", minPhase: 1, cd: 3.2, tele: 0.4 },
+    { id: "charge", minPhase: 2, cd: 5.2, tele: 0.55 },
+  ],
+  frostqueen: [
+    { id: "frost_ring", minPhase: 1, cd: 4.4, tele: 0.45 },
+    { id: "shards", minPhase: 1, cd: 3.4, tele: 0.5 },
+    { id: "summon", minPhase: 2, cd: 9.5, tele: 0.9 },
+  ],
+  voidemperor: [
+    { id: "spiral", minPhase: 1, cd: 5.2, tele: 0.5 },
+    { id: "blink", minPhase: 1, cd: 4.6, tele: 0.6 },
+    { id: "beam", minPhase: 2, cd: 6, tele: 0.85 },
+  ],
+};
+
 const rand = (a: number, b: number) => a + Math.random() * (b - a);
 const randInt = (a: number, b: number) => Math.floor(rand(a, b + 1));
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 const dist = (ax: number, ay: number, bx: number, by: number) =>
   Math.hypot(ax - bx, ay - by);
+const distToSegment = (
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number
+) => {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const l2 = dx * dx + dy * dy;
+  if (l2 === 0) return dist(px, py, ax, ay);
+  let t = ((px - ax) * dx + (py - ay) * dy) / l2;
+  t = clamp(t, 0, 1);
+  return dist(px, py, ax + t * dx, ay + t * dy);
+};
+
+function mulberry32(seed: number) {
+  let a = seed >>> 0;
+  return function () {
+    a += 0x6d2b79f5;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
 export interface EngineOpts {
   canvas: HTMLCanvasElement;
@@ -165,6 +284,7 @@ export interface EngineOpts {
   save: SaveData;
   mapIndex: number;
   onComplete: (r: RunResult) => void;
+  onInteract?: (kind: "merchant" | "skill") => void;
 }
 
 export class GameEngine {
@@ -174,6 +294,7 @@ export class GameEngine {
   save: SaveData;
   mapIndex: number;
   onComplete: (r: RunResult) => void;
+  onInteract?: (kind: "merchant" | "skill") => void;
 
   cls: ClassDef;
   stats: PlayerStats;
@@ -196,6 +317,20 @@ export class GameEngine {
   obstacles: Rect[] = [];
   boss: Boss | null = null;
   bossSpawned = false;
+  bossRequired = true;
+
+  gate: Gate = { x: 0, y: 0, open: false };
+  camp: { x: number; y: number } = { x: 0, y: 0 };
+  crates: Crate[] = [];
+  secretOpened = false;
+  decor: Decor[] = [];
+  zones: Zone[] = [];
+  rings: Ring[] = [];
+  beams: Beam[] = [];
+  killsNeeded = 0;
+  kills = 0;
+  shake = 0;
+  paused = false;
 
   keys = new Set<string>();
   mx = 0;
@@ -204,7 +339,14 @@ export class GameEngine {
   aimX = 0;
   aimY = 0;
 
-  run = { gold: 0, res: 0, xp: 0, level: 1, weaponRewards: [] as string[], bossDefeated: false };
+  run = {
+    gold: 0,
+    res: 0,
+    xp: 0,
+    level: 1,
+    weaponRewards: [] as string[],
+    bossDefeated: false,
+  };
   banner = { text: "", time: 0 };
   finished = false;
   started = false;
@@ -213,6 +355,8 @@ export class GameEngine {
   idc = 1;
   victoryTimer = 0;
   deathTimer = 0;
+  lastHitSfx = 0;
+  time = 0;
 
   keyDownHandler = (e: KeyboardEvent) => this.onKeyDown(e);
   keyUpHandler = (e: KeyboardEvent) => this.onKeyUp(e);
@@ -228,11 +372,13 @@ export class GameEngine {
     this.save = opts.save;
     this.mapIndex = opts.mapIndex;
     this.onComplete = opts.onComplete;
+    this.onInteract = opts.onInteract;
     this.cls = CLASSES[opts.save.classId];
     this.stats = computeStats(opts.save);
     this.ctx = this.canvas.getContext("2d")!;
     this.run.level = opts.save.level;
     this.run.xp = opts.save.xp;
+    this.bossRequired = !opts.save.defeatedBosses.includes(opts.mapIndex);
   }
 
   attackDamage() {
@@ -269,8 +415,20 @@ export class GameEngine {
     window.removeEventListener("blur", this.blurHandler);
   }
 
+  setPaused(p: boolean) {
+    this.paused = p;
+  }
+
+  /** Live-update save after in-map purchases/upgrades. */
+  setSave(next: SaveData) {
+    this.save = next;
+    this.stats = computeStats(next);
+    if (this.player)
+      this.player.hp = Math.min(this.player.hp, this.maxHp());
+  }
+
   requestAbandon() {
-    if (!this.finished) this.complete("abandon");
+    if (!this.finished && !this.paused) this.complete("abandon");
   }
 
   resize() {
@@ -292,7 +450,7 @@ export class GameEngine {
     this.worldH = 1150 + this.mapIndex * 80;
     this.player = {
       x: this.worldW / 2,
-      y: this.worldH / 2 + 200,
+      y: this.worldH - 160,
       vx: 0,
       vy: 0,
       hp: this.maxHp(),
@@ -301,6 +459,8 @@ export class GameEngine {
       dodgeCd: 0,
       dodgeTime: 0,
       invuln: 0,
+      slowTime: 0,
+      slowFactor: 1,
       skillCd: [0, 0, 0],
       hitFlash: 0,
       walkPhase: 0,
@@ -308,12 +468,21 @@ export class GameEngine {
     this.cam.x = clamp(this.player.x - this.VW / 2, 0, this.worldW - this.VW);
     this.cam.y = clamp(this.player.y - this.VH / 2, 0, this.worldH - this.VH);
 
+    // boss gate (far corner) + mid-map camp
+    this.gate = { x: this.worldW - 170, y: 170, open: !this.bossRequired };
+    this.camp = { x: this.worldW * 0.52, y: this.worldH * 0.45 };
+
+    const avoid = (x: number, y: number, r: number) =>
+      dist(x, y, this.player.x, this.player.y) < r ||
+      dist(x, y, this.gate.x, this.gate.y) < r + 60 ||
+      dist(x, y, this.camp.x, this.camp.y) < r + 70;
+
     // obstacles (rock clusters)
     const clusters = 5 + this.mapIndex;
     for (let i = 0; i < clusters; i++) {
       const ox = rand(120, this.worldW - 180);
       const oy = rand(120, this.worldH - 180);
-      if (dist(ox, oy, this.player.x, this.player.y) < 180) continue;
+      if (avoid(ox, oy, 160)) continue;
       const n = randInt(2, 4);
       for (let j = 0; j < n; j++) {
         this.obstacles.push({
@@ -325,35 +494,70 @@ export class GameEngine {
       }
     }
 
+    // themed decorations (visual only)
+    const rng = mulberry32(this.mapIndex * 7919 + 13);
+    const decorCount = 26 + this.mapIndex * 4;
+    for (let i = 0; i < decorCount; i++) {
+      const x = 60 + rng() * (this.worldW - 120);
+      const y = 60 + rng() * (this.worldH - 120);
+      if (avoid(x, y, 90)) continue;
+      this.decor.push({
+        x,
+        y,
+        kind: map.decor[Math.floor(rng() * map.decor.length)],
+        seed: rng() * 1000,
+      });
+    }
+
+    // secret crates (breakable wall hiding a treasure)
+    const sx = rand(150, 380);
+    const sy = rand(150, this.worldH - 200);
+    for (let i = 0; i < 3; i++) {
+      this.crates.push({ x: sx + (i - 1) * 30, y: sy, hp: 3, maxHp: 3 });
+    }
+
     // enemies
     for (let i = 0; i < map.enemyCount; i++) this.spawnEnemy("grunt");
-    for (let i = 0; i < Math.ceil(map.enemyCount / 4); i++) this.spawnEnemy("shooter");
+    for (let i = 0; i < Math.ceil(map.enemyCount / 4); i++)
+      this.spawnEnemy("shooter");
     for (let i = 0; i < map.eliteCount; i++) this.spawnEnemy("elite");
+    const total =
+      map.enemyCount + Math.ceil(map.enemyCount / 4) + map.eliteCount;
+    this.killsNeeded = Math.ceil(total * map.killQuota);
 
     // chests (some secret, in corners)
     const spots = [
       [100, 100],
       [this.worldW - 100, 100],
       [100, this.worldH - 100],
-      [this.worldW - 100, this.worldH - 100],
       [this.worldW / 2, 120],
+      [this.worldW / 2, this.worldH - 80],
     ];
     spots.forEach((s, i) => {
       if (i < 3 + this.mapIndex)
         this.chests.push({ x: s[0], y: s[1], opened: false, t: 0 });
     });
 
-    this.banner = { text: `${map.name}`, time: 2.4 };
+    this.banner = {
+      text: this.bossRequired ? map.name : `${map.name}  —  CLEARED`,
+      time: 2.4,
+    };
   }
 
-  spawnEnemy(type: EnemyType) {
+  spawnEnemy(type: EnemyType, px?: number, py?: number) {
     const map = getMap(this.mapIndex);
-    let x = 0;
-    let y = 0;
-    for (let tries = 0; tries < 30; tries++) {
-      x = rand(80, this.worldW - 80);
-      y = rand(80, this.worldH - 80);
-      if (dist(x, y, this.player.x, this.player.y) > 260) break;
+    let x = px ?? 0;
+    let y = py ?? 0;
+    if (px === undefined) {
+      for (let tries = 0; tries < 30; tries++) {
+        x = rand(80, this.worldW - 80);
+        y = rand(80, this.worldH - 80);
+        const far =
+          dist(x, y, this.player.x, this.player.y) > 260 &&
+          dist(x, y, this.gate.x, this.gate.y) > 170 &&
+          dist(x, y, this.camp.x, this.camp.y) > 130;
+        if (far) break;
+      }
     }
     let hp = map.enemyHp;
     let dmg = map.enemyDamage;
@@ -374,6 +578,14 @@ export class GameEngine {
       speed = rand(60, 78);
       gold = 45;
       res = 4;
+      xp = Math.round(hp / 3);
+    } else if (type === "mini") {
+      hp = Math.round(hp * 0.6);
+      dmg = Math.round(dmg * 0.8);
+      radius = 11;
+      speed = rand(80, 100);
+      gold = 12;
+      res = 1;
       xp = Math.round(hp / 3);
     }
     this.enemies.push({
@@ -406,12 +618,15 @@ export class GameEngine {
 
   // ---------- input ----------
   onKeyDown(e: KeyboardEvent) {
+    sfx.unlock();
     const k = e.key.toLowerCase();
     this.keys.add(k);
+    if (this.paused) return;
     if (k === "q") this.useSkill(0);
     else if (k === "e") this.useSkill(1);
     else if (k === "r") this.useSkill(2);
     else if (k === " ") this.mdown = true;
+    else if (k === "f") this.tryInteract();
     else if (k === "escape") this.requestAbandon();
     if ([" ", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k))
       e.preventDefault();
@@ -422,6 +637,7 @@ export class GameEngine {
     if (k === " ") this.mdown = false;
   }
   onMouseDown(e: MouseEvent) {
+    sfx.unlock();
     if (e.button === 0) this.mdown = true;
   }
   onMouseMove(e: MouseEvent) {
@@ -430,19 +646,42 @@ export class GameEngine {
     this.my = e.clientY - rect.top;
   }
 
+  tryInteract() {
+    if (!this.onInteract) return;
+    const p = this.player;
+    const dTent = dist(p.x, p.y, this.camp.x, this.camp.y);
+    const dCrystal = dist(
+      p.x,
+      p.y,
+      this.camp.x + 64,
+      this.camp.y + 6
+    );
+    if (dTent < 56) {
+      sfx.play("ui");
+      this.paused = true;
+      this.onInteract("merchant");
+    } else if (dCrystal < 48) {
+      sfx.play("ui");
+      this.paused = true;
+      this.onInteract("skill");
+    }
+  }
+
   // ---------- main loop ----------
   loop(ts: number) {
     if (this.finished) return;
     let dt = (ts - this.last) / 1000;
     this.last = ts;
     dt = Math.min(0.05, dt);
-    this.update(dt);
+    if (!this.paused) this.update(dt);
     this.render();
     this.updateHud();
     this.raf = requestAnimationFrame((t) => this.loop(t));
   }
 
   update(dt: number) {
+    this.time += dt;
+    this.shake = Math.max(0, this.shake - dt * 26);
     // aim
     const rect = this.canvas.getBoundingClientRect();
     const vx = (this.mx / Math.max(1, rect.width)) * this.VW;
@@ -459,6 +698,32 @@ export class GameEngine {
     this.updateParticles(dt);
     this.updateDmgNums(dt);
     this.updateChests(dt);
+    this.updateZones(dt);
+    this.updateRings(dt);
+    this.updateBeams(dt);
+
+    // boss gate: opens once the kill quota is met
+    if (
+      this.bossRequired &&
+      !this.gate.open &&
+      this.kills >= this.killsNeeded
+    ) {
+      this.gate.open = true;
+      this.banner = { text: "THE BOSS GATE HAS OPENED!", time: 2.6 };
+      this.shake = 4;
+      sfx.play("gate");
+    }
+
+    // boss spawn: step into the open gate
+    if (
+      this.bossRequired &&
+      this.gate.open &&
+      !this.bossSpawned &&
+      !this.run.bossDefeated &&
+      dist(this.player.x, this.player.y, this.gate.x, this.gate.y) < 54
+    ) {
+      this.spawnBoss();
+    }
 
     // camera
     const tcx = clamp(this.player.x - this.VW / 2, 0, this.worldW - this.VW);
@@ -477,15 +742,6 @@ export class GameEngine {
       this.deathTimer -= dt;
       if (this.deathTimer <= 0) this.complete("death");
     }
-
-    // boss spawn check
-    if (
-      !this.bossSpawned &&
-      !this.run.bossDefeated &&
-      this.enemies.length === 0
-    ) {
-      this.spawnBoss();
-    }
   }
 
   updatePlayer(dt: number) {
@@ -495,6 +751,7 @@ export class GameEngine {
     p.dodgeTime = Math.max(0, p.dodgeTime - dt);
     p.invuln = Math.max(0, p.invuln - dt);
     p.hitFlash = Math.max(0, p.hitFlash - dt);
+    p.slowTime = Math.max(0, p.slowTime - dt);
     for (let i = 0; i < 3; i++) p.skillCd[i] = Math.max(0, p.skillCd[i] - dt);
 
     let dx = 0;
@@ -521,11 +778,13 @@ export class GameEngine {
       p.invuln = 0.32;
       p.vx = dx * this.stats.moveSpeed * 2.4;
       p.vy = dy * this.stats.moveSpeed * 2.4;
+      sfx.play("dodge");
     }
 
+    const slowMul = p.slowTime > 0 ? p.slowFactor : 1;
     if (p.dodgeTime <= 0) {
-      p.vx = dx * this.stats.moveSpeed;
-      p.vy = dy * this.stats.moveSpeed;
+      p.vx = dx * this.stats.moveSpeed * slowMul;
+      p.vy = dy * this.stats.moveSpeed * slowMul;
     }
 
     p.x += p.vx * dt;
@@ -560,6 +819,48 @@ export class GameEngine {
     o.y = clamp(o.y, r, this.worldH - r);
   }
 
+  damageCrate(x: number, y: number, range: number) {
+    let best: Crate | null = null;
+    let bd = Infinity;
+    for (const c of this.crates) {
+      if (c.hp <= 0) continue;
+      const d = dist(x, y, c.x, c.y);
+      if (d < range && d < bd) {
+        bd = d;
+        best = c;
+      }
+    }
+    if (best) {
+      best.hp -= 1;
+      this.spawnHitSpark(best.x, best.y, "#b45309");
+      sfx.play("crack");
+      if (best.hp <= 0) {
+        this.crates = this.crates.filter((c) => c !== best);
+        this.spawnHitSpark(best.x, best.y, "#92400e");
+        if (this.crates.length === 0 && !this.secretOpened) {
+          this.secretOpened = true;
+          this.banner = { text: "SECRET FOUND!", time: 2.4 };
+          sfx.play("secret");
+          this.chests.push({
+            x: best.x,
+            y: best.y + 26,
+            opened: false,
+            t: 0,
+            rich: true,
+          });
+          this.pickups.push({
+            x: best.x,
+            y: best.y - 20,
+            kind: "health",
+            value: Math.round(this.maxHp() * 0.2),
+            vy: 0,
+            t: 0,
+          });
+        }
+      }
+    }
+  }
+
   basicAttack() {
     const p = this.player;
     p.attackTimer = 1 / this.stats.attackSpeed;
@@ -591,6 +892,7 @@ export class GameEngine {
           hit = true;
         }
       }
+      this.damageCrate(p.x, p.y, range + 14);
       // slash visual
       this.particles.push({
         x: p.x + Math.cos(p.facing) * 20,
@@ -602,7 +904,13 @@ export class GameEngine {
         color: w.color,
         size: 30,
       });
-      if (hit) this.spawnHitSpark(p.x + Math.cos(p.facing) * 30, p.y + Math.sin(p.facing) * 30, w.color);
+      sfx.play("swing");
+      if (hit)
+        this.spawnHitSpark(
+          p.x + Math.cos(p.facing) * 30,
+          p.y + Math.sin(p.facing) * 30,
+          w.color
+        );
     } else {
       // ranged
       const kind: ProjKind = this.cls.id === "mage" ? "orb" : "arrow";
@@ -626,6 +934,7 @@ export class GameEngine {
         slow: w.passive === "slow",
         angle: p.facing,
       });
+      sfx.play(this.cls.id === "mage" ? "orb" : "arrow");
     }
   }
 
@@ -638,6 +947,7 @@ export class GameEngine {
     const lvl = this.save.skillLevels[skillId] ?? 1;
     const base = this.attackDamage();
     p.skillCd[slot] = skill.baseCooldown;
+    sfx.play("skill");
 
     if (this.cls.id === "swordsman") {
       if (skillId === "sword_slash") {
@@ -658,6 +968,7 @@ export class GameEngine {
           if (diff > Math.PI) diff = Math.PI * 2 - diff;
           if (diff < 1.4) this.dealToBoss(dmg);
         }
+        this.damageCrate(p.x, p.y, range + 10);
         this.aoes.push({
           x: p.x,
           y: p.y,
@@ -683,12 +994,18 @@ export class GameEngine {
           const ty = p.y + Math.sin(p.facing) * (step * range) / 6;
           const list = [...this.enemies];
           for (const e of list) {
-            if (dist(tx, ty, e.x, e.y) < 26 + e.radius) this.dealToEnemy(e, dmg * 0.5, p.facing);
+            if (dist(tx, ty, e.x, e.y) < 26 + e.radius)
+              this.dealToEnemy(e, dmg * 0.5, p.facing);
           }
           if (this.boss && dist(tx, ty, this.boss.x, this.boss.y) < 26 + this.boss.radius)
             this.dealToBoss(dmg * 0.5);
+          this.damageCrate(tx, ty, 26);
         }
-        this.spawnHitSpark(p.x + Math.cos(p.facing) * range, p.y + Math.sin(p.facing) * range, this.stats.weapon.color);
+        this.spawnHitSpark(
+          p.x + Math.cos(p.facing) * range,
+          p.y + Math.sin(p.facing) * range,
+          this.stats.weapon.color
+        );
       } else if (skillId === "whirlwind") {
         const radius = 96 + 26 * (lvl - 1);
         const dmg = base * (1 + 0.22 * (lvl - 1)) * 1.1;
@@ -727,7 +1044,7 @@ export class GameEngine {
           slow: false,
           angle: p.facing,
         });
-        // explosion handled on impact via life? simpler: spawn AoE at target after travel
+        // explosion at target after travel
         const tx = p.x + Math.cos(p.facing) * 240;
         const ty = p.y + Math.sin(p.facing) * 240;
         this.aoes.push({
@@ -898,11 +1215,13 @@ export class GameEngine {
       color: crit ? "#fde047" : "#ffffff",
       size: crit ? 9 : 7,
     });
+    const now = performance.now();
+    if (now - this.lastHitSfx > 90) {
+      this.lastHitSfx = now;
+      sfx.play(crit ? "crit" : "hit");
+    }
     if (this.stats.lifesteal > 0) {
       this.player.hp = Math.min(this.maxHp(), this.player.hp + dmg * this.stats.lifesteal);
-    }
-    if (this.stats.weapon.passive === "burn" || this.stats.weapon.passive === "poison") {
-      // handled by projectile flags; basic attacks also apply if weapon passive
     }
     const w = this.stats.weapon;
     if (w.passive === "burn") {
@@ -937,6 +1256,11 @@ export class GameEngine {
       color: crit ? "#fde047" : "#ffffff",
       size: crit ? 10 : 8,
     });
+    const now = performance.now();
+    if (now - this.lastHitSfx > 90) {
+      this.lastHitSfx = now;
+      sfx.play(crit ? "crit" : "hit");
+    }
     if (this.stats.lifesteal > 0) {
       this.player.hp = Math.min(this.maxHp(), this.player.hp + dmg * this.stats.lifesteal);
     }
@@ -949,6 +1273,7 @@ export class GameEngine {
 
   killEnemy(e: Enemy) {
     this.enemies = this.enemies.filter((x) => x.id !== e.id);
+    this.kills += 1;
     this.run.gold += e.gold;
     this.run.res += e.res;
     this.addXp(e.xp);
@@ -962,8 +1287,16 @@ export class GameEngine {
       size: 7,
     });
     this.spawnHitSpark(e.x, e.y, this.enemyColor(e.type));
+    sfx.play("coin");
     if (Math.random() < 0.28) {
-      this.pickups.push({ x: e.x, y: e.y, kind: "health", value: Math.round(this.maxHp() * 0.14), vy: 0, t: 0 });
+      this.pickups.push({
+        x: e.x,
+        y: e.y,
+        kind: "health",
+        value: Math.round(this.maxHp() * 0.14),
+        vy: 0,
+        t: 0,
+      });
     }
   }
 
@@ -972,8 +1305,9 @@ export class GameEngine {
     const map = getMap(this.mapIndex);
     this.run.gold += map.rewardGold;
     this.run.res += map.rewardResources;
-    if (!this.run.weaponRewards.includes(map.rewardWeapon))
-      this.run.weaponRewards.push(map.rewardWeapon);
+    const reward = map.rewardWeapons[this.cls.id];
+    if (reward && !this.run.weaponRewards.includes(reward))
+      this.run.weaponRewards.push(reward);
     this.addXp(Math.round(map.boss.maxHp / 4));
     this.spawnHitSpark(this.boss!.x, this.boss!.y, this.boss!.color);
     this.particles.push({
@@ -987,7 +1321,9 @@ export class GameEngine {
       size: 80,
     });
     this.boss = null;
+    this.shake = 8;
     this.banner = { text: "BOSS DEFEATED!", time: 2.6 };
+    sfx.play("victory");
     this.victoryTimer = 2.2;
   }
 
@@ -1008,6 +1344,8 @@ export class GameEngine {
         color: "#fde047",
         size: 8,
       });
+      this.shake = Math.max(this.shake, 3);
+      sfx.play("levelup");
     }
   }
 
@@ -1061,36 +1399,37 @@ export class GameEngine {
 
   dealStatus(e: Enemy, amount: number, color: string) {
     e.hp -= amount;
-    this.dmgnums.push({
-      x: e.x + rand(-4, 4),
-      y: e.y - e.radius,
-      vy: -22,
-      life: 0.5,
-      text: String(Math.round(amount)),
-      color,
-      size: 6,
-    });
+    if (amount >= 1) {
+      this.dmgnums.push({
+        x: e.x + rand(-4, 4),
+        y: e.y - e.radius,
+        vy: -22,
+        life: 0.5,
+        text: String(Math.round(amount)),
+        color,
+        size: 6,
+      });
+    }
     if (e.hp <= 0) this.killEnemy(e);
   }
 
-  spawnEnemyProj(x: number, y: number, ang: number, dmg: number) {
-    const map = getMap(this.mapIndex);
+  spawnEnemyProj(x: number, y: number, ang: number, dmg: number, opts?: { color?: string; slow?: boolean; speed?: number }) {
     this.projectiles.push({
       x,
       y,
-      vx: Math.cos(ang) * 190,
-      vy: Math.sin(ang) * 190,
+      vx: Math.cos(ang) * (opts?.speed ?? 190),
+      vy: Math.sin(ang) * (opts?.speed ?? 190),
       radius: 5,
       damage: dmg,
       from: "enemy",
       life: 3,
-      color: "#fca5a5",
+      color: opts?.color ?? "#fca5a5",
       pierce: 0,
       hitIds: new Set(),
       kind: "bolt",
       burn: false,
       poison: false,
-      slow: false,
+      slow: !!opts?.slow,
       angle: ang,
     });
   }
@@ -1099,18 +1438,16 @@ export class GameEngine {
   spawnBoss() {
     const map = getMap(this.mapIndex);
     this.bossSpawned = true;
-    const bx = this.worldW / 2;
-    const by = 160;
     this.boss = {
-      x: bx,
-      y: by,
+      x: this.gate.x,
+      y: this.gate.y,
       vx: 0,
       vy: 0,
       hp: map.boss.maxHp,
       maxHp: map.boss.maxHp,
       radius: 26,
       phase: 1,
-      attackTimer: 2,
+      attackTimer: 2.2,
       chargeTimer: 4,
       charging: 0,
       chargeVx: 0,
@@ -1119,8 +1456,15 @@ export class GameEngine {
       name: map.boss.name,
       color: map.boss.color,
       id: map.boss.id,
+      state: "idle",
+      pattern: "radial",
+      attackT: 0,
+      spiral: null,
+      data: [],
     };
     this.banner = { text: `${map.boss.name} appears!`, time: 2.8 };
+    this.shake = 6;
+    sfx.play("boss");
   }
 
   updateBoss(dt: number) {
@@ -1130,20 +1474,59 @@ export class GameEngine {
     const p = this.player;
     const d = dist(b.x, b.y, p.x, p.y);
     const ang = Math.atan2(p.y - b.y, p.x - b.x);
+    const map = getMap(this.mapIndex);
 
     // phase transitions
     const frac = b.hp / b.maxHp;
-    if (frac <= 0.33) b.phase = 3;
-    else if (frac <= 0.66) b.phase = 2;
-    else b.phase = 1;
+    const newPhase = frac <= 0.33 ? 3 : frac <= 0.66 ? 2 : 1;
+    if (newPhase > b.phase) {
+      b.phase = newPhase;
+      this.banner = { text: "THE BOSS GROWS FURIOUS!", time: 1.6 };
+      this.shake = Math.max(this.shake, 5);
+      sfx.play("phase");
+      this.spawnHitSpark(b.x, b.y, b.color);
+    }
     const speedMul = b.phase === 3 ? 1.5 : b.phase === 2 ? 1.2 : 1;
+
+    // rotating spiral attack
+    if (b.spiral) {
+      b.spiral.t -= dt;
+      b.spiral.step -= dt;
+      if (b.spiral.step <= 0) {
+        b.spiral.step = 0.11;
+        b.spiral.rot += 0.5;
+        for (const off of [0, Math.PI]) {
+          const a = b.spiral.rot + off;
+          this.projectiles.push({
+            x: b.x,
+            y: b.y,
+            vx: Math.cos(a) * 170,
+            vy: Math.sin(a) * 170,
+            radius: 6,
+            damage: Math.round(map.enemyDamage * 1.0),
+            from: "enemy",
+            life: 3.4,
+            color: "#c084fc",
+            pierce: 0,
+            hitIds: new Set(),
+            kind: "boss",
+            burn: false,
+            poison: false,
+            slow: false,
+            angle: a,
+          });
+        }
+      }
+      if (b.spiral.t <= 0) b.spiral = null;
+    }
 
     if (b.charging > 0) {
       b.charging -= dt;
       b.x += b.chargeVx * dt;
       b.y += b.chargeVy * dt;
       this.clampBounds(b, b.radius);
-      if (d < b.radius + 14) this.damagePlayer(Math.round(getMap(this.mapIndex).enemyDamage * 1.4), b.x, b.y);
+      if (d < b.radius + 14)
+        this.damagePlayer(Math.round(map.enemyDamage * 1.4), b.x, b.y);
       return;
     }
 
@@ -1152,61 +1535,281 @@ export class GameEngine {
     b.y += Math.sin(ang) * 38 * speedMul * dt;
     this.clampBounds(b, b.radius);
 
-    b.attackTimer -= dt;
-    b.chargeTimer -= dt;
-
-    if (b.attackTimer <= 0) {
-      b.attackTimer = b.phase === 3 ? 1.6 : b.phase === 2 ? 2.2 : 2.8;
-      // radial volley
-      const n = b.phase === 3 ? 14 : b.phase === 2 ? 10 : 8;
-      const base = b.phase === 3 ? 0 : 0;
-      for (let i = 0; i < n; i++) {
-        const a = (i / n) * Math.PI * 2 + base;
-        this.projectiles.push({
-          x: b.x,
-          y: b.y,
-          vx: Math.cos(a) * 150,
-          vy: Math.sin(a) * 150,
-          radius: 7,
-          damage: Math.round(getMap(this.mapIndex).enemyDamage * 1.2),
-          from: "enemy",
-          life: 4,
-          color: b.color,
-          pierce: 0,
-          hitIds: new Set(),
-          kind: "boss",
-          burn: false,
-          poison: false,
-          slow: false,
-          angle: a,
-        });
+    // attack state machine
+    if (b.state === "idle") {
+      b.attackTimer -= dt;
+      if (b.attackTimer <= 0) {
+        const pool = BOSS_PATTERNS[b.id] ?? [
+          { id: "radial", minPhase: 1, cd: 2.8, tele: 0.4 },
+        ];
+        const usable = pool.filter((x) => x.minPhase <= b.phase);
+        const pat = usable[Math.floor(Math.random() * usable.length)];
+        b.pattern = pat.id;
+        b.state = "telegraph";
+        b.attackT = pat.tele;
+        b.data = this.prepareBossAttack(b, pat.id, ang);
+      }
+    } else {
+      b.attackT -= dt;
+      if (b.attackT <= 0) {
+        this.executeBossAttack(b, ang);
+        b.state = "idle";
+        const pool = BOSS_PATTERNS[b.id] ?? [];
+        const pat = pool.find((x) => x.id === b.pattern);
+        b.attackTimer = (pat?.cd ?? 2.8) * (b.phase === 3 ? 0.72 : 1);
       }
     }
 
-    if (b.chargeTimer <= 0 && b.phase >= 2) {
-      b.chargeTimer = b.phase === 3 ? 3.5 : 5;
-      b.charging = 0.6;
-      b.chargeVx = Math.cos(ang) * 360;
-      b.chargeVy = Math.sin(ang) * 360;
-    }
-
-    // contact
-    if (d < b.radius + 10 && b.attackTimer > 0.5) {
-      // gentle contact handled by charge; light touch damage
-    }
+    // periodic contact damage
     if (d < b.radius + 10) {
-      // periodic contact damage
       if (!b._touch || b._touch <= 0) {
         b._touch = 0.6;
-        this.damagePlayer(Math.round(getMap(this.mapIndex).enemyDamage * 0.8), b.x, b.y);
+        this.damagePlayer(Math.round(map.enemyDamage * 0.8), b.x, b.y);
       }
     }
     b._touch = Math.max(0, (b._touch ?? 0) - dt);
   }
 
+  prepareBossAttack(b: Boss, id: string, ang: number) {
+    const p = this.player;
+    if (id === "meteor") {
+      return [0, 1, 2].map((i) => ({
+        x: clamp(p.x + rand(-150, 150), 40, this.worldW - 40),
+        y: clamp(p.y + rand(-150, 150), 40, this.worldH - 40),
+      }));
+    }
+    if (id === "beam") {
+      const ex = p.x + Math.cos(ang + Math.PI) * 700;
+      const ey = p.y + Math.sin(ang + Math.PI) * 700;
+      return [{ x: ex, y: ey }];
+    }
+    return [];
+  }
+
+  executeBossAttack(b: Boss, ang: number) {
+    const map = getMap(this.mapIndex);
+    const p = this.player;
+    const dmgBase = map.enemyDamage;
+
+    switch (b.pattern) {
+      case "radial": {
+        const n = b.phase === 3 ? 14 : b.phase === 2 ? 10 : 8;
+        for (let i = 0; i < n; i++) {
+          const a = (i / n) * Math.PI * 2;
+          this.projectiles.push({
+            x: b.x,
+            y: b.y,
+            vx: Math.cos(a) * 150,
+            vy: Math.sin(a) * 150,
+            radius: 7,
+            damage: Math.round(dmgBase * 1.2),
+            from: "enemy",
+            life: 4,
+            color: b.color,
+            pierce: 0,
+            hitIds: new Set(),
+            kind: "boss",
+            burn: false,
+            poison: false,
+            slow: false,
+            angle: a,
+          });
+        }
+        break;
+      }
+      case "spit": {
+        for (let i = -1; i <= 1; i++) {
+          this.spawnEnemyProj(
+            b.x,
+            b.y,
+            ang + i * 0.22,
+            Math.round(dmgBase * 1.15),
+            { color: "#a3e635", speed: 210 }
+          );
+        }
+        break;
+      }
+      case "split": {
+        if (this.enemies.length < 12) {
+          for (let i = 0; i < 2; i++) {
+            this.spawnEnemy(
+              "mini",
+              b.x + rand(-60, 60),
+              b.y + rand(-60, 60)
+            );
+          }
+          this.banner = { text: "THE SLIME KING SPLITS!", time: 1.4 };
+        } else {
+          this.executeBossAttack({ ...b, pattern: "radial" } as Boss, ang);
+        }
+        break;
+      }
+      case "meteor": {
+        for (const s of b.data) {
+          this.zones.push({
+            x: s.x,
+            y: s.y,
+            r: 36,
+            life: 0.55,
+            maxLife: 0.55,
+            damage: Math.round(dmgBase * 1.3),
+            dealt: false,
+            color: "#fb923c",
+          });
+          this.spawnHitSpark(s.x, s.y, "#f97316");
+        }
+        this.shake = Math.max(this.shake, 3);
+        sfx.play("crack");
+        break;
+      }
+      case "charge": {
+        b.charging = 0.6;
+        b.chargeVx = Math.cos(ang) * 380;
+        b.chargeVy = Math.sin(ang) * 380;
+        this.shake = Math.max(this.shake, 4);
+        break;
+      }
+      case "frost_ring": {
+        this.rings.push({
+          x: b.x,
+          y: b.y,
+          r: 14,
+          vr: 175,
+          life: 1.5,
+          damage: Math.round(dmgBase * 1.1),
+          hit: false,
+          color: "#7dd3fc",
+        });
+        break;
+      }
+      case "shards": {
+        for (let i = -2; i <= 2; i++) {
+          this.spawnEnemyProj(
+            b.x,
+            b.y,
+            ang + i * 0.26,
+            Math.round(dmgBase * 1.0),
+            { color: "#7dd3fc", slow: true, speed: 195 }
+          );
+        }
+        break;
+      }
+      case "summon": {
+        if (this.enemies.length < 10) {
+          for (let i = 0; i < 2; i++) {
+            this.spawnEnemy(
+              "mini",
+              b.x + rand(-70, 70),
+              b.y + rand(-70, 70)
+            );
+          }
+          this.spawnHitSpark(b.x, b.y, "#7dd3fc");
+          this.banner = { text: "FROST MINIONS RISE!", time: 1.4 };
+        }
+        break;
+      }
+      case "spiral": {
+        b.spiral = { t: 1.35, rot: rand(0, 6.28), step: 0.1 };
+        break;
+      }
+      case "blink": {
+        const oldX = b.x;
+        const oldY = b.y;
+        const a2 = rand(0, Math.PI * 2);
+        const d2 = rand(130, 180);
+        b.x = clamp(p.x + Math.cos(a2) * d2, 60, this.worldW - 60);
+        b.y = clamp(p.y + Math.sin(a2) * d2, 60, this.worldH - 60);
+        this.spawnHitSpark(oldX, oldY, "#a855f7");
+        this.spawnHitSpark(b.x, b.y, "#a855f7");
+        this.shake = Math.max(this.shake, 2);
+        const n = 12;
+        for (let i = 0; i < n; i++) {
+          const a = (i / n) * Math.PI * 2;
+          this.projectiles.push({
+            x: b.x,
+            y: b.y,
+            vx: Math.cos(a) * 160,
+            vy: Math.sin(a) * 160,
+            radius: 6,
+            damage: Math.round(dmgBase * 1.1),
+            from: "enemy",
+            life: 3.4,
+            color: "#a855f7",
+            pierce: 0,
+            hitIds: new Set(),
+            kind: "boss",
+            burn: false,
+            poison: false,
+            slow: false,
+            angle: a,
+          });
+        }
+        break;
+      }
+      case "beam": {
+        if (b.data.length > 0) {
+          const { x: bx, y: by } = b.data[0];
+          this.beams.push({
+            ax: b.x,
+            ay: b.y,
+            bx,
+            by,
+            life: 0.35,
+            maxLife: 0.35,
+            color: "#a855f7",
+          });
+          if (distToSegment(p.x, p.y, b.x, b.y, bx, by) < 18) {
+            this.damagePlayer(Math.round(dmgBase * 1.4), b.x, b.y);
+          }
+          sfx.play("crack");
+        }
+        break;
+      }
+    }
+  }
+
+  // ---------- zones / rings / beams ----------
+  updateZones(dt: number) {
+    const keep: Zone[] = [];
+    for (const z of this.zones) {
+      z.life -= dt;
+      if (
+        !z.dealt &&
+        dist(this.player.x, this.player.y, z.x, z.y) < z.r
+      ) {
+        z.dealt = true;
+        this.damagePlayer(z.damage, z.x, z.y);
+      }
+      if (z.life > 0) keep.push(z);
+    }
+    this.zones = keep;
+  }
+
+  updateRings(dt: number) {
+    const keep: Ring[] = [];
+    for (const r of this.rings) {
+      r.life -= dt;
+      r.r += r.vr * dt;
+      const d = dist(this.player.x, this.player.y, r.x, r.y);
+      if (!r.hit && Math.abs(d - r.r) < 14) {
+        r.hit = true;
+        this.damagePlayer(r.damage, r.x, r.y);
+      }
+      if (r.life > 0 && r.r < 420) keep.push(r);
+    }
+    this.rings = keep;
+  }
+
+  updateBeams(dt: number) {
+    this.beams = this.beams.filter((b) => {
+      b.life -= dt;
+      return b.life > 0;
+    });
+  }
+
   damagePlayer(amount: number, fromX: number, fromY: number) {
     const p = this.player;
-    if (p.invuln > 0) return;
+    if (p.hp <= 0 || p.invuln > 0) return;
     const reduced = Math.round(amount * (1 - this.stats.defense));
     p.hp -= reduced;
     p.invuln = 0.45;
@@ -1225,10 +1828,12 @@ export class GameEngine {
       color: "#f87171",
       size: 8,
     });
+    sfx.play("hurt");
     if (p.hp <= 0 && !this.finished && this.deathTimer <= 0) {
       p.hp = 0;
       this.deathTimer = 1.2;
       this.banner = { text: "YOU DIED", time: 1.5 };
+      sfx.play("death");
     }
   }
 
@@ -1268,16 +1873,44 @@ export class GameEngine {
         if (!consumed && this.boss && !pr.hitIds.has(-1)) {
           if (dist(pr.x, pr.y, this.boss.x, this.boss.y) < pr.radius + this.boss.radius) {
             this.dealToBoss(pr.damage);
-            if (pr.burn) {
-              /* boss resist */
-            }
             pr.hitIds.add(-1);
             if (pr.pierce <= 0) consumed = true;
             else pr.pierce -= 1;
           }
         }
+        // crates block projectiles
+        if (!consumed) {
+          for (const c of this.crates) {
+            if (c.hp > 0 && dist(pr.x, pr.y, c.x, c.y) < 12 + pr.radius) {
+              c.hp -= 1;
+              this.spawnHitSpark(c.x, c.y, "#b45309");
+              sfx.play("crack");
+              if (c.hp <= 0) {
+                this.crates = this.crates.filter((x) => x !== c);
+                if (this.crates.length === 0 && !this.secretOpened) {
+                  this.secretOpened = true;
+                  this.banner = { text: "SECRET FOUND!", time: 2.4 };
+                  sfx.play("secret");
+                  this.chests.push({
+                    x: c.x,
+                    y: c.y + 26,
+                    opened: false,
+                    t: 0,
+                    rich: true,
+                  });
+                }
+              }
+              consumed = true;
+              break;
+            }
+          }
+        }
       } else {
         if (dist(pr.x, pr.y, this.player.x, this.player.y) < pr.radius + 8) {
+          if (pr.slow) {
+            this.player.slowTime = 1.1;
+            this.player.slowFactor = 0.65;
+          }
           this.damagePlayer(pr.damage, pr.x, pr.y);
           consumed = true;
         }
@@ -1297,7 +1930,8 @@ export class GameEngine {
         if (a.tick <= 0) {
           a.tick = 0.35;
           for (const e of [...this.enemies]) {
-            if (dist(a.x, a.y, e.x, e.y) < a.radius + e.radius) this.dealToEnemy(e, a.damage, 0);
+            if (dist(a.x, a.y, e.x, e.y) < a.radius + e.radius)
+              this.dealToEnemy(e, a.damage, 0);
           }
           if (this.boss && dist(a.x, a.y, this.boss.x, this.boss.y) < a.radius + this.boss.radius)
             this.dealToBoss(a.damage);
@@ -1323,6 +1957,7 @@ export class GameEngine {
           color: "#4ade80",
           size: 7,
         });
+        sfx.play("pickup");
         continue;
       }
       keep.push(pk);
@@ -1339,8 +1974,9 @@ export class GameEngine {
       if (dist(c.x, c.y, this.player.x, this.player.y) < 28) {
         c.opened = true;
         c.t = 0;
-        const gold = randInt(30, 70) + this.mapIndex * 10;
-        const res = randInt(1, 3);
+        const mult = c.rich ? 1.8 : 1;
+        const gold = Math.round((randInt(30, 70) + this.mapIndex * 10) * mult);
+        const res = randInt(1, 3) + (c.rich ? 2 : 0);
         this.run.gold += gold;
         this.run.res += res;
         this.dmgnums.push({
@@ -1352,6 +1988,31 @@ export class GameEngine {
           color: "#fbbf24",
           size: 7,
         });
+        // chance to find equipment in the chest
+        const clsWeapons = Object.values(WEAPONS).filter(
+          (w) =>
+            w.classId === this.cls.id &&
+            !w.starter &&
+            !w.bossOnly &&
+            !this.save.ownedWeapons.includes(w.id)
+        );
+        if (
+          clsWeapons.length > 0 &&
+          Math.random() < (c.rich ? 0.3 : 0.15)
+        ) {
+          const w = clsWeapons[randInt(0, clsWeapons.length - 1)];
+          this.run.weaponRewards.push(w.id);
+          this.dmgnums.push({
+            x: c.x,
+            y: c.y - 26,
+            vy: -16,
+            life: 1.6,
+            text: `Found ${w.name}!`,
+            color: "#67e8f9",
+            size: 7,
+          });
+        }
+        sfx.play("chest");
         for (let i = 0; i < 10; i++)
           this.particles.push({
             x: c.x,
@@ -1409,6 +2070,7 @@ export class GameEngine {
   enemyColor(type: EnemyType) {
     if (type === "shooter") return "#60a5fa";
     if (type === "elite") return "#c084fc";
+    if (type === "mini") return "#a3e635";
     return "#86efac";
   }
 
@@ -1417,6 +2079,7 @@ export class GameEngine {
     if (this.finished) return;
     this.finished = true;
     cancelAnimationFrame(this.raf);
+    if (outcome === "victory") sfx.play("victory");
     this.onComplete({
       outcome,
       goldEarned: this.run.gold,
@@ -1438,14 +2101,24 @@ export class GameEngine {
     ctx.fillStyle = "#05060a";
     ctx.fillRect(0, 0, w, h);
 
+    const shx = this.shake > 0 ? rand(-this.shake, this.shake) : 0;
+    const shy = this.shake > 0 ? rand(-this.shake, this.shake) : 0;
+
     ctx.save();
     ctx.scale(this.scale, this.scale);
-    ctx.translate(-this.cam.x, -this.cam.y);
+    ctx.translate(-this.cam.x - shx, -this.cam.y - shy);
 
     this.drawGround();
+    this.drawDecor();
+    this.drawZones();
     this.drawObstacles();
+    this.drawCrates();
     this.drawChests();
+    this.drawCamp();
+    this.drawGate();
     this.drawAoes();
+    this.drawRings();
+    this.drawBeams();
     this.drawPickups();
     this.drawProjectiles();
     this.drawEnemies();
@@ -1455,6 +2128,28 @@ export class GameEngine {
     this.drawDmgNums();
 
     ctx.restore();
+
+    // low HP vignette
+    if (
+      this.player &&
+      !this.finished &&
+      this.player.hp > 0 &&
+      this.player.hp < this.maxHp() * 0.3
+    ) {
+      const a = 0.16 + 0.1 * Math.sin(performance.now() / 180);
+      const g = ctx.createRadialGradient(
+        w / 2,
+        h / 2,
+        h * 0.32,
+        w / 2,
+        h / 2,
+        h * 0.75
+      );
+      g.addColorStop(0, "rgba(0,0,0,0)");
+      g.addColorStop(1, `rgba(190,18,18,${a.toFixed(3)})`);
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, w, h);
+    }
   }
 
   drawGround() {
@@ -1473,10 +2168,149 @@ export class GameEngine {
         ctx.fillStyle = shade ? map.ground : map.bg;
         ctx.fillRect(x, y, tile, tile);
         // pebble
-        const h = (Math.sin(tx * 12.9898 + ty * 78.233) * 43758.5453) % 1;
-        if (h > 0.82) {
+        const hsh = (Math.sin(tx * 12.9898 + ty * 78.233) * 43758.5453) % 1;
+        if (hsh > 0.82) {
           ctx.fillStyle = "rgba(255,255,255,0.05)";
           ctx.fillRect(x + 6, y + 6, 4, 4);
+        }
+      }
+    }
+  }
+
+  drawDecor() {
+    const ctx = this.ctx;
+    const t = this.time;
+    for (const d of this.decor) {
+      const { x, y } = d;
+      switch (d.kind) {
+        case "tree":
+          ctx.fillStyle = "#5b4423";
+          ctx.fillRect(x - 3, y - 4, 6, 12);
+          ctx.fillStyle = "#1f7a3d";
+          ctx.fillRect(x - 12, y - 22, 24, 12);
+          ctx.fillStyle = "#2c9e52";
+          ctx.fillRect(x - 8, y - 28, 16, 8);
+          break;
+        case "pine":
+          ctx.fillStyle = "#5b4423";
+          ctx.fillRect(x - 2, y, 4, 8);
+          ctx.fillStyle = "#2b6e8f";
+          ctx.beginPath();
+          ctx.moveTo(x, y - 22);
+          ctx.lineTo(x + 10, y + 2);
+          ctx.lineTo(x - 10, y + 2);
+          ctx.fill();
+          break;
+        case "bush":
+          ctx.fillStyle = "#2f7d43";
+          ctx.fillRect(x - 9, y - 4, 18, 8);
+          ctx.fillStyle = "#3f9e58";
+          ctx.fillRect(x - 6, y - 7, 12, 5);
+          break;
+        case "mushroom":
+          ctx.fillStyle = "#e7d8b0";
+          ctx.fillRect(x - 2, y - 4, 4, 6);
+          ctx.fillStyle = "#d94f3d";
+          ctx.fillRect(x - 6, y - 8, 12, 5);
+          ctx.fillStyle = "#ffe9e2";
+          ctx.fillRect(x - 3, y - 7, 2, 2);
+          ctx.fillRect(x + 2, y - 6, 2, 2);
+          break;
+        case "stump":
+          ctx.fillStyle = "#6b4e2a";
+          ctx.fillRect(x - 7, y - 4, 14, 10);
+          ctx.fillStyle = "#8a6636";
+          ctx.fillRect(x - 5, y - 6, 10, 4);
+          break;
+        case "stalag":
+        case "spike": {
+          const c = d.kind === "spike" ? "#9bd7f2" : "#6b7280";
+          ctx.fillStyle = c;
+          ctx.beginPath();
+          ctx.moveTo(x, y - 16);
+          ctx.lineTo(x + 7, y + 4);
+          ctx.lineTo(x - 7, y + 4);
+          ctx.fill();
+          break;
+        }
+        case "crystal": {
+          const c = "#22d3ee";
+          ctx.fillStyle = c;
+          ctx.beginPath();
+          ctx.moveTo(x, y - 14);
+          ctx.lineTo(x + 6, y - 2);
+          ctx.lineTo(x, y + 4);
+          ctx.lineTo(x - 6, y - 2);
+          ctx.fill();
+          ctx.fillStyle = "rgba(103,232,249,0.35)";
+          ctx.fillRect(x - 8, y + 2, 16, 3);
+          break;
+        }
+        case "ice": {
+          const c = "#bae6fd";
+          ctx.fillStyle = c;
+          ctx.beginPath();
+          ctx.moveTo(x, y - 12);
+          ctx.lineTo(x + 5, y - 1);
+          ctx.lineTo(x, y + 5);
+          ctx.lineTo(x - 5, y - 1);
+          ctx.fill();
+          ctx.fillStyle = "#e0f2fe";
+          ctx.fillRect(x - 1, y - 10, 2, 8);
+          break;
+        }
+        case "snow":
+          ctx.fillStyle = "rgba(241,245,249,0.5)";
+          ctx.beginPath();
+          ctx.ellipse(x, y, 12, 5, 0, 0, Math.PI * 2);
+          ctx.fill();
+          break;
+        case "rock":
+          ctx.fillStyle = "#4b5563";
+          ctx.fillRect(x - 9, y - 6, 18, 12);
+          ctx.fillStyle = "#6b7280";
+          ctx.fillRect(x - 6, y - 9, 12, 5);
+          break;
+        case "ember": {
+          const flick = 0.5 + 0.5 * Math.sin(t * 6 + d.seed);
+          ctx.fillStyle = `rgba(251,146,60,${(0.35 + 0.5 * flick).toFixed(2)})`;
+          ctx.beginPath();
+          ctx.arc(x, y, 3 + flick * 2, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = "#fde68a";
+          ctx.fillRect(x - 1, y - 1, 2, 2);
+          break;
+        }
+        case "obelisk":
+          ctx.fillStyle = "#3b2d5e";
+          ctx.fillRect(x - 5, y - 22, 10, 26);
+          ctx.fillStyle = "#a855f7";
+          const gl = 0.4 + 0.4 * Math.sin(t * 2 + d.seed);
+          ctx.fillStyle = `rgba(168,85,247,${gl.toFixed(2)})`;
+          ctx.fillRect(x - 2, y - 16, 4, 3);
+          ctx.fillRect(x - 2, y - 9, 4, 3);
+          break;
+        case "fog": {
+          const drift = Math.sin(t * 0.4 + d.seed) * 8;
+          ctx.fillStyle = "rgba(203,213,225,0.08)";
+          ctx.beginPath();
+          ctx.ellipse(x + drift, y, 26, 8, 0, 0, Math.PI * 2);
+          ctx.fill();
+          break;
+        }
+        case "bones":
+          ctx.fillStyle = "#d6d3d1";
+          ctx.fillRect(x - 8, y - 1, 10, 3);
+          ctx.fillRect(x + 1, y + 2, 8, 3);
+          ctx.fillStyle = "#a8a29e";
+          ctx.fillRect(x - 6, y - 3, 3, 3);
+          break;
+        case "rune": {
+          const gl = 0.35 + 0.35 * Math.sin(t * 3 + d.seed);
+          ctx.strokeStyle = `rgba(192,132,252,${gl.toFixed(2)})`;
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(x - 4, y - 4, 8, 8);
+          break;
         }
       }
     }
@@ -1494,6 +2328,92 @@ export class GameEngine {
     }
   }
 
+  drawCrates() {
+    const ctx = this.ctx;
+    for (const c of this.crates) {
+      ctx.fillStyle = "#7c5a2e";
+      ctx.fillRect(c.x - 11, c.y - 11, 22, 22);
+      ctx.fillStyle = "#5b4636";
+      ctx.fillRect(c.x - 11, c.y - 11, 22, 3);
+      ctx.fillRect(c.x - 11, c.y + 8, 22, 3);
+      ctx.fillStyle = "#9a7440";
+      ctx.fillRect(c.x - 8, c.y - 7, 16, 14);
+      ctx.strokeStyle = "#5b4636";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(c.x - 11, c.y - 11);
+      ctx.lineTo(c.x + 11, c.y + 11);
+      ctx.stroke();
+      if (c.hp < c.maxHp) {
+        ctx.strokeStyle = "#2a2620";
+        ctx.beginPath();
+        ctx.moveTo(c.x - 4, c.y - 8);
+        ctx.lineTo(c.x + 2, c.y);
+        ctx.lineTo(c.x - 3, c.y + 7);
+        ctx.stroke();
+      }
+    }
+  }
+
+  drawZones() {
+    const ctx = this.ctx;
+    for (const z of this.zones) {
+      const t = z.life / z.maxLife;
+      ctx.globalAlpha = 0.28 + 0.4 * t;
+      ctx.fillStyle = z.color;
+      ctx.beginPath();
+      ctx.arc(z.x, z.y, z.r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 0.8;
+      ctx.fillStyle = "#fde68a";
+      ctx.beginPath();
+      ctx.arc(z.x, z.y, z.r * 0.4 * t, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  drawRings() {
+    const ctx = this.ctx;
+    for (const r of this.rings) {
+      const a = clamp(r.life / 1.5, 0, 1);
+      ctx.globalAlpha = 0.7 * a;
+      ctx.strokeStyle = r.color;
+      ctx.lineWidth = 7;
+      ctx.beginPath();
+      ctx.arc(r.x, r.y, r.r, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 0.25 * a;
+      ctx.fillStyle = r.color;
+      ctx.beginPath();
+      ctx.arc(r.x, r.y, Math.max(1, r.r - 6), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  drawBeams() {
+    const ctx = this.ctx;
+    for (const b of this.beams) {
+      const a = b.life / b.maxLife;
+      ctx.globalAlpha = 0.75 * a;
+      ctx.strokeStyle = b.color;
+      ctx.lineWidth = 12 * a + 2;
+      ctx.beginPath();
+      ctx.moveTo(b.ax, b.ay);
+      ctx.lineTo(b.bx, b.by);
+      ctx.stroke();
+      ctx.globalAlpha = a;
+      ctx.strokeStyle = "#f5f3ff";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(b.ax, b.ay);
+      ctx.lineTo(b.bx, b.by);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+  }
+
   drawChests() {
     const ctx = this.ctx;
     for (const c of this.chests) {
@@ -1504,12 +2424,139 @@ export class GameEngine {
         ctx.fillRect(c.x - 9, c.y - 10, 18, 6);
         continue;
       }
+      const glow = c.rich
+        ? 0.5 + 0.4 * Math.sin(performance.now() / 200)
+        : 0;
+      if (glow > 0) {
+        ctx.fillStyle = `rgba(251,191,36,${(glow * 0.3).toFixed(2)})`;
+        ctx.beginPath();
+        ctx.arc(c.x, c.y, 18, 0, Math.PI * 2);
+        ctx.fill();
+      }
       ctx.fillStyle = "#7c5a2e";
       ctx.fillRect(c.x - 10, c.y - 8, 20, 14);
-      ctx.fillStyle = "#caa45a";
+      ctx.fillStyle = c.rich ? "#f59e0b" : "#caa45a";
       ctx.fillRect(c.x - 10, c.y - 2, 20, 4);
       ctx.fillStyle = "#ffe08a";
       ctx.fillRect(c.x - 2, c.y - 6, 4, 4);
+    }
+  }
+
+  drawCamp() {
+    const ctx = this.ctx;
+    const { x, y } = this.camp;
+    // merchant tent
+    ctx.fillStyle = "#7c2d12";
+    ctx.fillRect(x - 22, y - 6, 44, 12);
+    ctx.fillStyle = "#b45309";
+    ctx.fillRect(x - 24, y - 18, 48, 12);
+    for (let i = 0; i < 4; i++) {
+      ctx.fillStyle = i % 2 === 0 ? "#f5f5f4" : "#b91c1c";
+      ctx.fillRect(x - 24 + i * 12, y - 18, 12, 12);
+    }
+    ctx.fillStyle = "#78350f";
+    ctx.fillRect(x - 20, y - 18, 3, 24);
+    ctx.fillRect(x + 17, y - 18, 3, 24);
+    ctx.fillStyle = "#92400e";
+    ctx.fillRect(x - 14, y + 2, 28, 8);
+    ctx.fillStyle = "#b45309";
+    ctx.fillRect(x - 14, y + 2, 28, 3);
+    // coin on counter
+    ctx.fillStyle = "#fbbf24";
+    ctx.fillRect(x - 4, y - 1, 5, 4);
+    // skill crystal
+    const cx = x + 64;
+    const cy = y + 6;
+    const bob = Math.sin(this.time * 2.4) * 3;
+    ctx.fillStyle = "#44403c";
+    ctx.fillRect(cx - 8, cy + 8, 16, 5);
+    const c = "#a855f7";
+    ctx.fillStyle = c;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - 12 + bob);
+    ctx.lineTo(cx + 7, cy + bob);
+    ctx.lineTo(cx, cy + 10 + bob);
+    ctx.lineTo(cx - 7, cy + bob);
+    ctx.fill();
+    ctx.fillStyle = "#e9d5ff";
+    ctx.fillRect(cx - 2, cy - 8 + bob, 3, 10);
+    const gl = 0.25 + 0.2 * Math.sin(this.time * 3);
+    ctx.fillStyle = `rgba(168,85,247,${gl.toFixed(2)})`;
+    ctx.beginPath();
+    ctx.arc(cx, cy + bob, 14, 0, Math.PI * 2);
+    ctx.fill();
+    // prompts
+    const p = this.player;
+    const dTent = dist(p.x, p.y, x, y);
+    const dCry = dist(p.x, p.y, cx, cy);
+    ctx.textAlign = "center";
+    ctx.font = "bold 8px monospace";
+    if (dTent < 56) {
+      ctx.fillStyle = "#000";
+      ctx.fillText("F — MERCHANT", x + 1, y - 26);
+      ctx.fillStyle = "#fde68a";
+      ctx.fillText("F — MERCHANT", x, y - 27);
+    }
+    if (dCry < 48) {
+      ctx.fillStyle = "#000";
+      ctx.fillText("F — SKILL STATION", cx + 1, cy - 22);
+      ctx.fillStyle = "#d8b4fe";
+      ctx.fillText("F — SKILL STATION", cx, cy - 23);
+    }
+  }
+
+  drawGate() {
+    const ctx = this.ctx;
+    const g = this.gate;
+    const t = this.time;
+    // pillars
+    ctx.fillStyle = "#3b3f4a";
+    ctx.fillRect(g.x - 36, g.y - 30, 11, 60);
+    ctx.fillRect(g.x + 25, g.y - 30, 11, 60);
+    ctx.fillStyle = "#2b2f38";
+    ctx.fillRect(g.x - 40, g.y - 40, 80, 11);
+    ctx.fillStyle = "#4b5563";
+    ctx.fillRect(g.x - 40, g.y - 40, 80, 3);
+    if (this.bossRequired && !g.open) {
+      const pulse = 0.5 + 0.5 * Math.sin(t * 4);
+      ctx.fillStyle = `rgba(248,113,113,${(0.3 + 0.25 * pulse).toFixed(2)})`;
+      ctx.fillRect(g.x - 25, g.y - 29, 50, 58);
+      ctx.strokeStyle = "#f87171";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(g.x - 25, g.y - 29, 50, 58);
+      ctx.fillStyle = "#fecaca";
+      ctx.fillRect(g.x - 16, g.y - 18, 5, 5);
+      ctx.fillRect(g.x + 11, g.y - 18, 5, 5);
+      ctx.fillRect(g.x - 16, g.y + 13, 5, 5);
+      ctx.fillRect(g.x + 11, g.y + 13, 5, 5);
+      ctx.textAlign = "center";
+      ctx.font = "bold 8px monospace";
+      ctx.fillStyle = "#000";
+      ctx.fillText("SEALED", g.x + 1, g.y - 44);
+      ctx.fillStyle = "#fca5a5";
+      ctx.fillText("SEALED", g.x, g.y - 45);
+    } else if (this.bossRequired && g.open && !this.bossSpawned) {
+      // swirling amber portal
+      for (let i = 0; i < 3; i++) {
+        const a = t * 2.4 + (i * Math.PI * 2) / 3;
+        ctx.strokeStyle = i === 0 ? "#fbbf24" : "#f59e0b";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(g.x, g.y, 10 + i * 5, a, a + Math.PI * 1.2);
+        ctx.stroke();
+      }
+      ctx.fillStyle = `rgba(251,191,36,${(0.15 + 0.1 * Math.sin(t * 5)).toFixed(2)})`;
+      ctx.fillRect(g.x - 25, g.y - 29, 50, 58);
+      ctx.textAlign = "center";
+      ctx.font = "bold 8px monospace";
+      ctx.fillStyle = "#000";
+      ctx.fillText("BOSS GATE", g.x + 1, g.y - 44);
+      ctx.fillStyle = "#fde68a";
+      ctx.fillText("BOSS GATE", g.x, g.y - 45);
+    } else {
+      // cleared region: calm open gate
+      ctx.fillStyle = "rgba(74,222,128,0.18)";
+      ctx.fillRect(g.x - 25, g.y - 29, 50, 58);
     }
   }
 
@@ -1584,6 +2631,13 @@ export class GameEngine {
       ctx.fillStyle = "#111";
       ctx.fillRect(e.x - r * 0.5, e.y - r * 0.3, 2.2, 2.2);
       ctx.fillRect(e.x + r * 0.2, e.y - r * 0.3, 2.2, 2.2);
+      if (e.type === "elite") {
+        // elite crown marker
+        ctx.fillStyle = "#fde047";
+        ctx.fillRect(e.x - 5, e.y - r - 7, 10, 3);
+        ctx.fillRect(e.x - 5, e.y - r - 9, 3, 2);
+        ctx.fillRect(e.x + 2, e.y - r - 9, 3, 2);
+      }
       if (e.slowTime > 0) {
         ctx.fillStyle = "#7dd3fc55";
         ctx.beginPath();
@@ -1608,29 +2662,227 @@ export class GameEngine {
   drawBoss() {
     const ctx = this.ctx;
     const b = this.boss!;
-    const col = b.hitFlash > 0 ? "#ffffff" : b.color;
-    // body
-    ctx.fillStyle = col;
-    ctx.beginPath();
-    ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
-    ctx.fill();
-    // crown / horns
-    ctx.fillStyle = "#1f2937";
-    ctx.fillRect(b.x - b.radius, b.y - b.radius - 8, 6, 10);
-    ctx.fillRect(b.x + b.radius - 6, b.y - b.radius - 8, 6, 10);
-    ctx.fillStyle = "#fde047";
-    ctx.fillRect(b.x - 3, b.y - b.radius - 12, 6, 6);
-    // eyes
-    ctx.fillStyle = "#111";
-    ctx.fillRect(b.x - 10, b.y - 4, 4, 4);
-    ctx.fillRect(b.x + 6, b.y - 4, 4, 4);
-    // mouth
-    ctx.fillStyle = "#111";
-    ctx.fillRect(b.x - 8, b.y + 8, 16, 3);
-    if (b.phase >= 2) {
-      ctx.fillStyle = "#ffffff55";
+    const flash = b.hitFlash > 0;
+    const t = this.time;
+    switch (b.id) {
+      case "gloomfang": {
+        // wobbly gelatinous king
+        const wob = Math.sin(t * 3) * 3;
+        ctx.fillStyle = flash ? "#fff" : "#4d7c0f";
+        ctx.beginPath();
+        ctx.ellipse(b.x, b.y + 4, b.radius + 4, b.radius * 0.75 + wob, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = flash ? "#fff" : "#65a30d";
+        ctx.beginPath();
+        ctx.ellipse(b.x, b.y - 4, b.radius - 2, b.radius * 0.8 - wob * 0.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#bef264";
+        ctx.beginPath();
+        ctx.ellipse(b.x - 8, b.y - 10, 7, 5, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // drips
+        ctx.fillStyle = flash ? "#fff" : "#4d7c0f";
+        ctx.fillRect(b.x - 14, b.y + 12, 5, 6 + Math.sin(t * 5) * 2);
+        ctx.fillRect(b.x + 9, b.y + 13, 5, 5 + Math.cos(t * 5) * 2);
+        // crown
+        ctx.fillStyle = flash ? "#eee" : "#fde047";
+        ctx.fillRect(b.x - 12, b.y - b.radius - 10, 24, 6);
+        ctx.fillRect(b.x - 12, b.y - b.radius - 14, 5, 4);
+        ctx.fillRect(b.x - 2, b.y - b.radius - 16, 5, 6);
+        ctx.fillRect(b.x + 7, b.y - b.radius - 14, 5, 4);
+        // angry eyes
+        ctx.fillStyle = "#1a2e05";
+        ctx.fillRect(b.x - 10, b.y - 6, 6, 5);
+        ctx.fillRect(b.x + 4, b.y - 6, 6, 5);
+        ctx.fillStyle = "#fde047";
+        ctx.fillRect(b.x - 9, b.y - 5, 2, 2);
+        ctx.fillRect(b.x + 5, b.y - 5, 2, 2);
+        break;
+      }
+      case "magmalord": {
+        // molten rock titan
+        ctx.fillStyle = flash ? "#fff" : "#44403c";
+        ctx.beginPath();
+        ctx.ellipse(b.x, b.y, b.radius + 2, b.radius - 2, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = flash ? "#eee" : "#57534e";
+        ctx.beginPath();
+        ctx.ellipse(b.x, b.y - 8, b.radius * 0.7, b.radius * 0.6, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // lava cracks (pulsing)
+        const gl = 0.5 + 0.5 * Math.sin(t * 4);
+        ctx.strokeStyle = `rgba(249,115,22,${(0.5 + 0.5 * gl).toFixed(2)})`;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(b.x - 16, b.y + 2);
+        ctx.lineTo(b.x - 4, b.y + 8);
+        ctx.lineTo(b.x + 6, b.y);
+        ctx.lineTo(b.x + 16, b.y + 6);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(b.x - 6, b.y - 14);
+        ctx.lineTo(b.x + 2, b.y - 6);
+        ctx.stroke();
+        // magma droplets
+        ctx.fillStyle = "#fb923c";
+        const drip = (t * 30) % 20;
+        ctx.fillRect(b.x - 20, b.y + 14 + drip * 0.4, 4, 4);
+        ctx.fillRect(b.x + 18, b.y + 12 + ((drip + 9) % 16) * 0.5, 4, 4);
+        // glowing eyes
+        ctx.fillStyle = flash ? "#fff" : "#fde047";
+        ctx.fillRect(b.x - 11, b.y - 10, 5, 4);
+        ctx.fillRect(b.x + 6, b.y - 10, 5, 4);
+        // shoulder rocks
+        ctx.fillStyle = flash ? "#ddd" : "#292524";
+        ctx.fillRect(b.x - b.radius - 6, b.y - 6, 8, 12);
+        ctx.fillRect(b.x + b.radius - 2, b.y - 6, 8, 12);
+        break;
+      }
+      case "frostqueen": {
+        // crystalline sovereign
+        const shimmer = 0.5 + 0.5 * Math.sin(t * 2.4);
+        ctx.fillStyle = flash ? "#fff" : `rgba(125,211,252,${(0.55 + 0.25 * shimmer).toFixed(2)})`;
+        ctx.beginPath();
+        ctx.moveTo(b.x, b.y - b.radius - 6);
+        ctx.lineTo(b.x + b.radius * 0.8, b.y);
+        ctx.lineTo(b.x, b.y + b.radius + 4);
+        ctx.lineTo(b.x - b.radius * 0.8, b.y);
+        ctx.fill();
+        ctx.fillStyle = flash ? "#fff" : "#bae6fd";
+        ctx.beginPath();
+        ctx.moveTo(b.x, b.y - b.radius - 12);
+        ctx.lineTo(b.x + 8, b.y - b.radius + 6);
+        ctx.lineTo(b.x, b.y - b.radius + 14);
+        ctx.lineTo(b.x - 8, b.y - b.radius + 6);
+        ctx.fill();
+        // inner glow
+        ctx.fillStyle = `rgba(224,242,254,${(0.3 + 0.3 * shimmer).toFixed(2)})`;
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, 9, 0, Math.PI * 2);
+        ctx.fill();
+        // ice crown spikes
+        ctx.fillStyle = flash ? "#fff" : "#e0f2fe";
+        for (let i = -2; i <= 2; i++) {
+          const sx = b.x + i * 9;
+          const h = i === 0 ? 16 : 10 - Math.abs(i) * 2;
+          ctx.beginPath();
+          ctx.moveTo(sx, b.y - b.radius - 4);
+          ctx.lineTo(sx + 4, b.y - b.radius - 4 - h);
+          ctx.lineTo(sx + 8, b.y - b.radius - 4);
+          ctx.fill();
+        }
+        // serene eyes
+        ctx.fillStyle = "#0c4a6e";
+        ctx.fillRect(b.x - 9, b.y - 4, 5, 3);
+        ctx.fillRect(b.x + 4, b.y - 4, 5, 3);
+        // orbiting shards
+        for (let i = 0; i < 3; i++) {
+          const a = t * 1.6 + (i * Math.PI * 2) / 3;
+          ctx.fillStyle = "#7dd3fc";
+          ctx.fillRect(
+            b.x + Math.cos(a) * (b.radius + 12) - 2,
+            b.y + Math.sin(a) * (b.radius + 6) - 2,
+            4,
+            4
+          );
+        }
+        break;
+      }
+      case "voidemperor": {
+        // dark robed void sovereign
+        ctx.fillStyle = flash ? "#fff" : "#1e1033";
+        ctx.beginPath();
+        ctx.moveTo(b.x, b.y - b.radius - 8);
+        ctx.lineTo(b.x + b.radius, b.y + b.radius);
+        ctx.lineTo(b.x - b.radius, b.y + b.radius);
+        ctx.fill();
+        ctx.fillStyle = flash ? "#eee" : "#312e81";
+        ctx.beginPath();
+        ctx.arc(b.x, b.y - 6, 12, 0, Math.PI * 2);
+        ctx.fill();
+        // hood shadow + eyes
+        ctx.fillStyle = flash ? "#fff" : "#0a0118";
+        ctx.beginPath();
+        ctx.arc(b.x, b.y - 6, 9, 0, Math.PI * 2);
+        ctx.fill();
+        const eye = 0.6 + 0.4 * Math.sin(t * 5);
+        ctx.fillStyle = `rgba(216,180,254,${eye.toFixed(2)})`;
+        ctx.fillRect(b.x - 6, b.y - 8, 4, 3);
+        ctx.fillRect(b.x + 2, b.y - 8, 4, 3);
+        // void halo (rotating dashes)
+        for (let i = 0; i < 6; i++) {
+          const a = t * 2 + (i * Math.PI * 2) / 6;
+          const gl2 = 0.4 + 0.4 * Math.sin(t * 3 + i);
+          ctx.strokeStyle = `rgba(168,85,247,${gl2.toFixed(2)})`;
+          ctx.lineWidth = 2.5;
+          ctx.beginPath();
+          ctx.arc(
+            b.x,
+            b.y - 6,
+            b.radius + 10,
+            a,
+            a + 0.5
+          );
+          ctx.stroke();
+        }
+        // floating tatters
+        ctx.fillStyle = flash ? "#ddd" : "#1e1033";
+        const fl = Math.sin(t * 4) * 3;
+        ctx.fillRect(b.x - b.radius - 4, b.y + 8 + fl * 0.4, 6, 10);
+        ctx.fillRect(b.x + b.radius - 2, b.y + 8 - fl * 0.4, 6, 10);
+        break;
+      }
+      default: {
+        ctx.fillStyle = flash ? "#fff" : b.color;
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    // telegraph indicator
+    if (b.state === "telegraph") {
+      const pulse = 0.4 + 0.4 * Math.sin(performance.now() / 90);
+      ctx.strokeStyle = `rgba(255,255,255,${pulse.toFixed(2)})`;
+      ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(b.x, b.y, b.radius + 3, 0, Math.PI * 2);
+      ctx.arc(b.x, b.y, b.radius + 8 + pulse * 4, 0, Math.PI * 2);
+      ctx.stroke();
+      // meteor previews
+      if (b.pattern === "meteor") {
+        for (const s of b.data) {
+          ctx.strokeStyle = `rgba(251,146,60,${pulse.toFixed(2)})`;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(s.x, s.y, 36, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.fillStyle = `rgba(251,146,60,0.12)`;
+          ctx.beginPath();
+          ctx.arc(s.x, s.y, 36, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+      if (b.pattern === "beam" && b.data.length > 0) {
+        ctx.strokeStyle = `rgba(168,85,247,${pulse.toFixed(2)})`;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([8, 6]);
+        ctx.beginPath();
+        ctx.moveTo(b.x, b.y);
+        ctx.lineTo(b.data[0].x, b.data[0].y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      if (b.pattern === "charge") {
+        ctx.fillStyle = `rgba(248,113,113,${pulse.toFixed(2)})`;
+        ctx.font = "bold 10px monospace";
+        ctx.textAlign = "center";
+        ctx.fillText("!", b.x, b.y - b.radius - 14);
+      }
+    }
+    // phase aura
+    if (b.phase >= 2) {
+      ctx.fillStyle = `rgba(255,255,255,${(0.06 + 0.04 * Math.sin(t * 6)).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.radius + 6, 0, Math.PI * 2);
       ctx.fill();
     }
   }
@@ -1656,15 +2908,21 @@ export class GameEngine {
     // head
     ctx.fillStyle = "#f1c27d";
     ctx.fillRect(x - 4, y - 12 + bob, 8, 8);
-    // hat
+    // hat / class marker
     ctx.fillStyle = accent;
     ctx.fillRect(x - 5, y - 14 + bob, 10, 3);
+    if (this.cls.id === "mage") {
+      // pointy hat tip
+      ctx.fillRect(x - 2, y - 18 + bob, 4, 4);
+    }
     // weapon
     ctx.save();
     ctx.translate(x, y - 2 + bob);
     ctx.rotate(p.facing);
     ctx.fillStyle = this.stats.weapon.color;
-    ctx.fillRect(6, -2, 14, 4);
+    if (this.cls.id === "swordsman") ctx.fillRect(6, -2, 14, 4);
+    else if (this.cls.id === "mage") ctx.fillRect(5, -1.5, 13, 3);
+    else ctx.fillRect(6, -1.5, 11, 3);
     ctx.fillStyle = "#d4af37";
     ctx.fillRect(4, -3, 3, 6);
     ctx.restore();
@@ -1718,7 +2976,9 @@ export class GameEngine {
     const lvl = g("g-level");
     if (lvl) lvl.textContent = `Lv ${this.run.level}`;
     const xp = g("g-xp-fill");
-    if (xp) xp.style.width = clamp((this.run.xp / xpToNext(this.run.level)) * 100, 0, 100) + "%";
+    if (xp)
+      xp.style.width =
+        clamp((this.run.xp / xpToNext(this.run.level)) * 100, 0, 100) + "%";
     const gold = g("g-gold");
     if (gold) gold.textContent = `${this.run.gold}`;
     const res = g("g-res");
@@ -1743,11 +3003,31 @@ export class GameEngine {
       if (this.boss) {
         bossWrap.classList.remove("hidden");
         const bf = g("g-boss-fill");
-        if (bf) bf.style.width = clamp((this.boss.hp / this.boss.maxHp) * 100, 0, 100) + "%";
+        if (bf)
+          bf.style.width =
+            clamp((this.boss.hp / this.boss.maxHp) * 100, 0, 100) + "%";
         const bn = g("g-boss-name");
-        if (bn) bn.textContent = `${this.boss.name}  —  Phase ${this.boss.phase}`;
+        if (bn)
+          bn.textContent = `${this.boss.name}  —  Phase ${this.boss.phase}`;
       } else {
         bossWrap.classList.add("hidden");
+      }
+    }
+
+    const gateEl = g("g-gate");
+    if (gateEl) {
+      if (!this.bossRequired) {
+        gateEl.textContent = "REGION CLEARED — farm freely";
+        gateEl.style.opacity = "0.75";
+      } else if (!this.gate.open) {
+        const left = Math.max(0, this.killsNeeded - this.kills);
+        gateEl.textContent = `GATE SEALED — ${left} more foe${left === 1 ? "" : "s"} to fell`;
+        gateEl.style.opacity = "1";
+      } else if (!this.bossSpawned) {
+        gateEl.textContent = "GATE OPEN — seek the boss (top-right)";
+        gateEl.style.opacity = "1";
+      } else {
+        gateEl.style.opacity = "0";
       }
     }
 
@@ -1777,15 +3057,37 @@ export class GameEngine {
     const sx = W / this.worldW;
     const sy = H / this.worldH;
     ctx.fillStyle = "#f87171";
-    for (const e of this.enemies) ctx.fillRect(e.x * sx - 1, e.y * sy - 1, 2, 2);
+    for (const e of this.enemies)
+      ctx.fillRect(e.x * sx - 1, e.y * sy - 1, 2, 2);
     if (this.boss) {
       ctx.fillStyle = "#fde047";
       ctx.fillRect(this.boss.x * sx - 2, this.boss.y * sy - 2, 4, 4);
     }
+    // gate marker
+    if (this.bossRequired) {
+      ctx.fillStyle = this.gate.open ? "#fbbf24" : "#f87171";
+      ctx.fillRect(this.gate.x * sx - 2, this.gate.y * sy - 2, 4, 4);
+    }
+    // camp
     ctx.fillStyle = "#4ade80";
-    ctx.fillRect(this.player.x * sx - 1.5, this.player.y * sy - 1.5, 3, 3);
+    ctx.fillRect(this.camp.x * sx - 1, this.camp.y * sy - 1, 3, 3);
+    // secret crates
+    for (const c of this.crates)
+      ctx.fillRect(c.x * sx - 1, c.y * sy - 1, 2, 2);
+    ctx.fillStyle = "#4ade80";
+    ctx.fillRect(
+      this.player.x * sx - 1.5,
+      this.player.y * sy - 1.5,
+      3,
+      3
+    );
     // viewport
     ctx.strokeStyle = "#ffffff55";
-    ctx.strokeRect(this.cam.x * sx, this.cam.y * sy, this.VW * sx, this.VH * sy);
+    ctx.strokeRect(
+      this.cam.x * sx,
+      this.cam.y * sy,
+      this.VW * sx,
+      this.VH * sy
+    );
   }
 }
